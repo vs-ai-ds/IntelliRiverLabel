@@ -1,0 +1,5 @@
+shapely>=2.1.2
+numpy>=2.4.2
+Pillow>=12.1.0
+matplotlib>=3.10.8
+streamlit>=1.54
