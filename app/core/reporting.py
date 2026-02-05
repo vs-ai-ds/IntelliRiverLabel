@@ -10,6 +10,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from shapely.geometry.base import BaseGeometry
+
 from app.core.config import (
     ANGLE_OFFSETS_DEG,
     CONTAINMENT_TOLERANCE_PT,
@@ -24,7 +26,7 @@ from app.core.config import (
     SCORE_WEIGHT_FIT_MARGIN,
     SEED,
 )
-from app.core.types import PlacementResult
+from app.core.types import LabelSpec, PlacementResult
 
 
 def placement_to_dict(result: PlacementResult) -> dict:
@@ -94,10 +96,14 @@ def run_metadata_dict(
     }
 
 
-def ensure_report_dir(repo_root: Path, run_name: str) -> Path:
-    """Create reports/<run_name>/; return path. Fails if path exists as file."""
-    reports = repo_root / REPORTS_DIR
-    out = reports / run_name
+def ensure_report_dir(
+    repo_root: Path,
+    run_name: str,
+    output_dir: str | None = None,
+) -> Path:
+    """Create output_dir/<run_name>/ under repo_root; return path. Default output_dir from config."""
+    base = output_dir if output_dir is not None else REPORTS_DIR
+    out = (repo_root / base).resolve() / run_name
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -108,6 +114,26 @@ def write_placement_json(report_dir: Path, result: PlacementResult) -> Path:
     data = placement_to_dict(result)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
+
+
+def write_curved_svg_if_applicable(
+    report_dir: Path,
+    result: PlacementResult,
+    polygon: BaseGeometry,
+    label_spec: LabelSpec,
+) -> Path | None:
+    """
+    If result is phase_b_curved with path_pt, write after.svg and return path; else return None.
+    """
+    if result.mode != "phase_b_curved" or not result.path_pt:
+        return None
+    try:
+        from app.core.render_svg import export_curved_svg
+        out = report_dir / "after.svg"
+        export_curved_svg(polygon, label_spec, result.path_pt, out)
+        return out
+    except Exception:
+        return None
 
 
 def write_run_metadata_json(

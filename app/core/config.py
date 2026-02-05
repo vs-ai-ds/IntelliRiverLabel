@@ -1,4 +1,4 @@
-# Repo//app/core/config.py
+# app/core/config.py
 """
 Central configuration for river label placement.
 All tunable values live here; no magic numbers in other modules.
@@ -52,3 +52,19 @@ SEED: int | None = 42
 
 # ----- Default font -----
 DEFAULT_FONT_FAMILY: str = "DejaVu Sans"
+
+# ----- Phase B curved path -----
+CURVE_FIT_MARGIN: float = 1.10
+"""Path length >= label_width_pt * CURVE_FIT_MARGIN."""
+
+CURVE_EXTRA_CLEARANCE_PT: float = 2.0
+"""Extra clearance required along path (on top of padding_pt)."""
+
+CURVE_MAX_POINTS: int = 200
+"""Max points in path_pt for placement / SVG."""
+
+PATH_SMOOTHING_WINDOW: int = 7
+"""Window size for moving average smoothing of internal path."""
+
+PATH_SAMPLE_STEP_PT: float = 5.0
+"""Step (pt) when sampling along path for clearance."""

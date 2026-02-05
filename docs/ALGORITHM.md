@@ -44,30 +44,31 @@ Heuristic score combines:
 
 Pick best feasible candidate. If none feasible -> Phase A fails (rare) -> external placement.
 
-## Phase B — Curved Placement (optional wow factor)
+## Phase B — Curved Placement (optional)
 
 Goal: place text along an internal path that follows flow direction.
 
-### B1) Internal path extraction
-From polygon P:
-- Attempt to derive an internal path network (centerline-like).
-- Select the main path (longest high-clearance path).
+### B1) Internal path approximation
+From safe polygon (P inset by padding):
+- Sample interior points (Phase A sampling), keep top-K by clearance.
+- Compute PCA dominant axis of safe polygon boundary.
+- Project points onto PCA axis and sort by projected coordinate.
+- Smooth the ordered points (moving average) to form a polyline.
+- This polyline is the internal path for text-on-path.
 
-Important: if path extraction fails or is unstable, fall back to Phase A.
+If path build fails or path too short, return None and fall back to Phase A.
 
-### B2) Segment windows
-Slide windows along path with target arc length >= label length * 1.1.
-For each window segment s:
-- clearance_min(s) = min distance from sampled points on s to boundary(P)
-- curvature(s) = sum |Δθ|
-Prefer:
-- high clearance_min
-- low curvature
-- stable direction
+### B2) Path window selection
+Required window length >= label_width_pt * CURVE_FIT_MARGIN (e.g. 1.1).
+- Slide windows along path by arclength.
+- For each window: clearance_min = min distance to polygon boundary; curvature proxy = sum |Δθ|.
+- Choose window with best clearance and low curvature.
 
-### B3) Render curved label
-Render to SVG using a path definition and text-on-path.
-If curved label violates padding/feasibility, fall back to Phase A.
+### B3) Validation and output
+- Validate min clearance along window >= padding_pt + CURVE_EXTRA_CLEARANCE_PT.
+- Path length >= label_width_pt * 1.1.
+- Produce PlacementResult with mode=phase_b_curved, path_pt (downsampled).
+- Render to SVG (textPath, halo). If any step fails, return None and fall back to Phase A.
 
 ## Debug overlays (required for judging)
 - show P and safe region

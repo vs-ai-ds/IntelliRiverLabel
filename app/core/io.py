@@ -39,12 +39,44 @@ def load_wkt(path: str | Path, repo_root: Path | None = None) -> str:
     return resolved.read_text(encoding="utf-8").strip()
 
 
+def _first_wkt_only(wkt_string: str) -> str:
+    """
+    Return the first complete WKT geometry, stripping trailing text (e.g. "2." or extra lines).
+    Handles GEOSException "Unexpected text after end of geometry".
+    """
+    s = wkt_string.strip()
+    for prefix in ("MULTIPOLYGON", "POLYGON", "GEOMETRYCOLLECTION"):
+        if s.upper().startswith(prefix):
+            start = s.upper().index(prefix)
+            i = start + len(prefix)
+            depth = 0
+            in_paren = False
+            end = -1
+            while i < len(s):
+                c = s[i]
+                if c == "(":
+                    depth += 1
+                    in_paren = True
+                elif c == ")":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+                i += 1
+            if end > 0:
+                return s[start:end].strip()
+            break
+    return s
+
+
 def parse_wkt(wkt_string: str) -> BaseGeometry:
     """
     Parse WKT string into a Shapely geometry.
+    If the string contains extra text after the first geometry (e.g. "2."), only the first geometry is parsed.
     Does not fix validity; use validate_geometry for that.
     """
-    return wkt.loads(wkt_string)
+    single = _first_wkt_only(wkt_string)
+    return wkt.loads(single)
 
 
 def _extract_polygons(geom: BaseGeometry) -> list[Polygon]:

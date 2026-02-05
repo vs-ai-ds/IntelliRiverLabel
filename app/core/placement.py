@@ -11,6 +11,7 @@ from shapely.geometry.base import BaseGeometry
 from app.core.candidates_a import angle_candidates_deg, generate_candidate_points
 from app.core.config import PADDING_PT, SEED
 from app.core.geometry import polygon_bounds, oriented_rectangle
+from app.core.phase_b import try_phase_b_curved
 from app.core.scoring import (
     centering_score,
     fit_margin_ratio,
@@ -143,3 +144,52 @@ def run_placement_phase_a(
     if result is not None:
         return result
     return _external_fallback(river_geom, label, geometry_source, warnings)
+
+
+def run_placement(
+    river_geom: BaseGeometry,
+    safe_poly: BaseGeometry,
+    label: LabelSpec,
+    geometry_source: str,
+    seed: int | None = SEED,
+    allow_phase_b: bool = False,
+    padding_pt: float = PADDING_PT,
+) -> PlacementResult:
+    """
+    Run placement with optional Phase B. If allow_phase_b is True, tries Phase B first;
+    if it returns None, falls back to Phase A. Phase A is always the reliable path.
+    See: docs/ALGORITHM.md, docs/PLACEMENT_SCHEMA.md.
+    """
+    if allow_phase_b:
+        phase_b_result = try_phase_b_curved(
+            river_geom,
+            safe_poly,
+            label,
+            padding_pt,
+            seed,
+            geometry_source=geometry_source,
+        )
+        if phase_b_result is not None:
+            return phase_b_result
+    result = run_placement_phase_a(river_geom, safe_poly, label, geometry_source, seed=seed)
+    if allow_phase_b:
+        from app.core.phase_b import PHASE_B_WARNING
+        return PlacementResult(
+            label_text=result.label_text,
+            font_size_pt=result.font_size_pt,
+            font_family=result.font_family,
+            geometry_source=result.geometry_source,
+            units=result.units,
+            mode=result.mode,
+            confidence=result.confidence,
+            anchor_pt=result.anchor_pt,
+            angle_deg=result.angle_deg,
+            bbox_pt=result.bbox_pt,
+            path_pt=result.path_pt,
+            min_clearance_pt=result.min_clearance_pt,
+            fit_margin_ratio=result.fit_margin_ratio,
+            curvature_total_deg=result.curvature_total_deg,
+            straightness_ratio=result.straightness_ratio,
+            warnings=result.warnings + [PHASE_B_WARNING],
+        )
+    return result

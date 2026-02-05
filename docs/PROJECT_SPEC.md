@@ -31,7 +31,7 @@ Build a reliable, extensible Python system that:
 
 ## 3) Inputs
 Required:
-- `river.wkt` (Polygon or MultiPolygon, unit: pt)
+- River geometry: `docs/assets/problem/Problem_1_river.wkt` (repo-relative; Polygon or MultiPolygon, unit: pt)
 - `label_text` (string)
 - `font_size_pt` (number)
 
@@ -42,9 +42,11 @@ Optional:
 - `seed` (for deterministic sampling)
 
 ## 4) Outputs
+All under `reports/<run_name>/`:
 - `placement.json` (see `docs/PLACEMENT_SCHEMA.md`)
 - `before.png`, `after.png`
 - `debug.png` (safe polygon, candidate points/segments, chosen placement)
+- `run_metadata.json`
 - Optional: `after.svg` (for curved text path)
 
 ## 5) Success Criteria

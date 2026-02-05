@@ -1,64 +1,52 @@
 # IntelliRiverLabel
 
-Places a river name label **inside a river polygon** (WKT) with safe padding and readable placement. Exports `before.png`, `after.png`, `debug.png`, and `placement.json` to `reports/<run_name>/`.
+Places a river name label **inside** the river polygon (Phase A) with safe padding and readable placement. Outputs: `before.png`, `after.png`, `debug.png`, and `placement.json` to `reports/<run_name>/`.
+
+## What it does
+
+- **Phase A (default):** Internal straight placement with padding; label fully inside the polygon with optional rotation.
+- Input geometry: `docs/assets/problem/Problem_1_river.wkt` (repo-relative).
+- Outputs: `before.png`, `after.png`, `debug.png`, `placement.json` under `reports/<run_name>/`.
 
 ## Setup (Windows)
 
-From the repo root (e.g. `D:\HackArena3.0\IntelliRiverLabel`):
+From the repo root:
 
-**1. Create the virtual environment** (use either):
+1. Create the virtual environment: `py -m venv .venv` or `python -m venv .venv`
+2. Install dependencies: `pip install -r requirements.txt` (or `.\.venv\Scripts\pip install -r requirements.txt` if not activated)
 
-```powershell
-py -m venv .venv
-```
+## Run CLI
 
-or
-
-```powershell
-python -m venv .venv
-```
-
-**2. Activate the environment** (optional but convenient):
-
-- **PowerShell:**  
-  `.venv\Scripts\Activate.ps1`
-
-- **Command Prompt:**  
-  `.venv\Scripts\activate.bat`
-
-**3. Install dependencies** (use one of these):
-
-- If activated:  
-  `pip install -r requirements.txt`
-
-- If not activated:  
-  `.\.venv\Scripts\pip install -r requirements.txt`
-
-(Use `-r` so pip reads the list from `requirements.txt`.)
-
-## Run
-
-- **With activation:**  
-  `python -m app.core.runner`
-
-- **Without activation:**  
-  `.\.venv\Scripts\python -m app.core.runner`
-
-Example with options:
+Using explicit venv Python (recommended):
 
 ```powershell
 .\.venv\Scripts\python -m app.core.runner --text "ELBE" --font-size-pt 12 --run-name demo_01
 ```
 
-Outputs: `reports/demo_01/before.png`, `after.png`, `debug.png`, `placement.json`.
+## Run Streamlit
 
-## Inputs
+Run from the **repo root** (e.g. `D:\HackArena3.0\IntelliRiverLabel`) so the `app` package is found:
 
-Challenge assets (repo-relative):
+```powershell
+cd D:\HackArena3.0\IntelliRiverLabel
+set PYTHONPATH=%CD%
+.\.venv\Scripts\python -m streamlit run app/ui/app.py
+```
 
-- `docs/assets/problem/Problem_1_river.wkt`
-- `docs/assets/problem/problem_1.pdf`
-- `docs/assets/problem/problem_1_blurb.jpeg`
+Or on PowerShell:
+```powershell
+cd D:\HackArena3.0\IntelliRiverLabel
+$env:PYTHONPATH = $PWD
+.\.venv\Scripts\python -m streamlit run app/ui/app.py
+```
+
+## Outputs
+
+All run artifacts go to **`reports/<run_name>/`** (e.g. `reports/demo_01/`):
+
+- `before.png`, `after.png`, `debug.png`
+- `placement.json`
+- `run_metadata.json`
 
 ## Documentation
 

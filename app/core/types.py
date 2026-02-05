@@ -45,7 +45,6 @@ class PlacementResult:
 
     # input
     geometry_source: str
-    units: str = "pt"
 
     # result
     mode: PlacementMode
@@ -53,7 +52,6 @@ class PlacementResult:
     anchor_pt: tuple[float, float]  # (x, y)
     angle_deg: float
     bbox_pt: list[tuple[float, float]]  # 4 corners
-    path_pt: list[tuple[float, float]] | None = None  # only for phase_b_curved
 
     # metrics
     min_clearance_pt: float
@@ -61,5 +59,7 @@ class PlacementResult:
     curvature_total_deg: float
     straightness_ratio: float
 
-    # warnings
+    # optional / defaults (must follow required fields in dataclass)
+    units: str = "pt"
+    path_pt: list[tuple[float, float]] | None = None  # only for phase_b_curved
     warnings: list[str] = field(default_factory=list)
