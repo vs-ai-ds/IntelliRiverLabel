@@ -1,4 +1,4 @@
-# app/core/config.py
+# Repo//app/core/config.py
 """
 Central configuration for river label placement.
 All tunable values live here; no magic numbers in other modules.
@@ -17,6 +17,9 @@ PADDING_PT: float = 4.0
 
 MIN_BUFFER_PT: float = 0.5
 """Minimum buffer to try when safe polygon would be empty. See ALGORITHM A1."""
+
+MIN_PADDING_PT: float = 0.5
+"""Minimum padding when reducing after empty safe polygon. See ALGORITHM A1."""
 
 # ----- Sampling (Phase A) -----
 N_SAMPLE_POINTS: int = 500
@@ -37,6 +40,15 @@ CONTAINMENT_TOLERANCE_PT: float = 1e-6
 RENDER_WIDTH_PX: int = 800
 RENDER_HEIGHT_PX: int = 600
 
+# ----- Scoring (Phase A heuristic). See docs/ALGORITHM.md A5 -----
+SCORE_WEIGHT_CLEARANCE: float = 1.0
+SCORE_WEIGHT_FIT_MARGIN: float = 1.0
+SCORE_WEIGHT_CENTERING: float = 0.5
+SCORE_WEIGHT_ANGLE_PENALTY: float = 0.1
+
 # ----- Determinism -----
 SEED: int | None = 42
 """Random seed for sampling; None for non-deterministic."""
+
+# ----- Default font -----
+DEFAULT_FONT_FAMILY: str = "DejaVu Sans"

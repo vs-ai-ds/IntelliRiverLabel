@@ -1,7 +1,8 @@
 # app/core/preprocess.py
 """
-Preprocess river polygon: simplify, normalize orientation, build safe polygon
-via inward buffer. See: docs/ARCHITECTURE.md, docs/ALGORITHM.md (A1).
+Preprocess river polygon: fix validity (buffer(0)), simplify, build safe polygon
+via inward buffer. Reduce padding down to MIN_PADDING_PT if safe becomes empty.
+See: docs/ARCHITECTURE.md, docs/ALGORITHM.md (A1).
 """
 
 from __future__ import annotations
@@ -9,7 +10,8 @@ from __future__ import annotations
 from shapely.geometry import MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from app.core.config import MIN_BUFFER_PT, PADDING_PT
+from app.core.config import MIN_PADDING_PT, PADDING_PT
+from app.core.geometry import ensure_polygon
 
 
 def _normalize_polygon(poly: Polygon) -> Polygon:
@@ -41,11 +43,11 @@ def simplify_geometry(geom: BaseGeometry, tolerance: float = 0.0) -> BaseGeometr
 def safe_polygon(
     geom: BaseGeometry,
     padding_pt: float = PADDING_PT,
-    min_buffer_pt: float = MIN_BUFFER_PT,
+    min_padding_pt: float = MIN_PADDING_PT,
 ) -> BaseGeometry:
     """
     Compute safe polygon as inward buffer: safe = P.buffer(-padding_pt).
-    If safe is empty, reduce padding down to min_buffer_pt; if still empty,
+    If safe is empty, reduce padding down to min_padding_pt; if still empty,
     returns empty polygon (caller should treat as internal infeasible).
     See: docs/ALGORITHM.md A1.
     """
@@ -67,8 +69,8 @@ def safe_polygon(
 
     d = padding_pt
     safe = buffer_inward(geom, d)
-    while (safe is None or safe.is_empty) and d > min_buffer_pt:
-        d = max(min_buffer_pt, d / 2.0)
+    while (safe is None or safe.is_empty) and d > min_padding_pt:
+        d = max(min_padding_pt, d / 2.0)
         safe = buffer_inward(geom, d)
     if safe is None or safe.is_empty:
         return Polygon()
@@ -77,15 +79,19 @@ def safe_polygon(
 
 def preprocess_river(
     geom: BaseGeometry,
+    simplify_tol_pt: float = 0.0,
     padding_pt: float = PADDING_PT,
-    min_buffer_pt: float = MIN_BUFFER_PT,
-    simplify_tolerance: float = 0.0,
+    min_padding_pt: float = MIN_PADDING_PT,
 ) -> tuple[BaseGeometry, BaseGeometry]:
     """
-    Full preprocessing: simplify (optional), then compute safe polygon.
-    Returns (original_or_simplified_geom, safe_polygon).
+    Full preprocessing: fix invalid geometry (buffer(0)), simplify, then safe polygon.
+    Reduces padding down to min_padding_pt if safe polygon becomes empty.
+    Returns (simplified_geom, safe_polygon).
     See: docs/ARCHITECTURE.md, docs/ALGORITHM.md.
     """
-    simplified = simplify_geometry(geom, simplify_tolerance)
-    safe = safe_polygon(simplified, padding_pt=padding_pt, min_buffer_pt=min_buffer_pt)
+    geom = ensure_polygon(geom)
+    if geom.is_empty:
+        return geom, Polygon()
+    simplified = simplify_geometry(geom, simplify_tol_pt)
+    safe = safe_polygon(simplified, padding_pt=padding_pt, min_padding_pt=min_padding_pt)
     return simplified, safe
