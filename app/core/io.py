@@ -95,6 +95,43 @@ def _extract_polygons(geom: BaseGeometry) -> list[Polygon]:
     return []
 
 
+def extract_polygon_components(geom: BaseGeometry) -> list[Polygon]:
+    """
+    Return a list of Polygon components from validated geometry (Polygon, MultiPolygon, or GeometryCollection).
+    Used for multi-part WKT: UI can show component dropdown and placement uses one polygon.
+    """
+    return _extract_polygons(geom)
+
+
+def select_best_component(
+    geom: BaseGeometry,
+    padding_pt: float,
+) -> Polygon:
+    """
+    When geom has multiple polygon parts, return the one with highest feasibility proxy:
+    area of safe polygon (after inward padding). Single polygon is returned as-is.
+    """
+    from app.core.preprocess import preprocess_river
+
+    components = extract_polygon_components(geom)
+    if not components:
+        return Polygon()
+    if len(components) == 1:
+        return components[0]
+    best_idx = 0
+    best_area = -1.0
+    for i, poly in enumerate(components):
+        try:
+            _, safe = preprocess_river(poly, padding_pt=padding_pt)
+            a = safe.area if safe and not safe.is_empty else 0.0
+            if a > best_area:
+                best_area = a
+                best_idx = i
+        except Exception:
+            continue
+    return components[best_idx]
+
+
 def validate_geometry(geom: BaseGeometry) -> BaseGeometry:
     """
     Validate and fix geometry: ensure valid, return Polygon or MultiPolygon.

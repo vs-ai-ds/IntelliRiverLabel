@@ -68,9 +68,22 @@ In scope:
 - Polygon/MultiPolygon handling
 - Straight label placement + rotation
 - Optional curved placement using an internal path
+- **Multi-label layout** with **collision avoidance** (occupied geometry, penalty/reject)
+- **Batch mode**: directory of .wkt or manifest CSV; output index.csv + cases/
+- **Zoom buckets**: consistent placement/scale by zoom (scaled font/padding per bucket)
+- **Evaluation families** (straight_wide, curved_narrow, etc.) and **leaderboard** export (CSV/JSON)
 - Debug visualization + metrics + export
 
 Out of scope:
 - Full multi-layer map labeling engine
 - Heavy model training / deep learning
 - Mobile app build
+
+## 7) Supported geometry
+- **POLYGON**, **MULTIPOLYGON**, or **GEOMETRYCOLLECTION** containing polygons (unit: pt).
+- Multi-part: user may select a component (Auto = best by safe area, or index 0, 1, 2…).
+
+## 8) Known limitations
+- Phase B (curved) requires a sufficiently long centerline path; narrow or very irregular polygons may fall back to Phase A.
+- Multi-label collision uses a 2D occupied union; very dense labels may fail placement for later labels.
+- Batch and evaluation runs write under `reports/`; do not commit these artifacts.

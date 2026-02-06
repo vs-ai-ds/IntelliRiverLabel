@@ -150,3 +150,21 @@ def write_run_metadata_json(
     data = run_metadata_dict(run_name, geometry_path, label_text, font_size_pt, padding_pt, seed)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
+
+
+def write_placements_json(
+    report_dir: Path,
+    results: list[PlacementResult],
+    summary: dict,
+    inputs: dict,
+) -> Path:
+    """Write placements.json for multi-label runs. Schema: labels, results (placement dicts), summary, input."""
+    path = report_dir / "placements.json"
+    data = {
+        "labels": [{"text": r.label_text, "font_size_pt": r.font_size_pt, "font_family": r.font_family} for r in results],
+        "results": [placement_to_dict(r) for r in results],
+        "summary": summary,
+        "input": inputs,
+    }
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path

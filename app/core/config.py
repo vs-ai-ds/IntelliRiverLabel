@@ -68,3 +68,39 @@ PATH_SMOOTHING_WINDOW: int = 7
 
 PATH_SAMPLE_STEP_PT: float = 5.0
 """Step (pt) when sampling along path for clearance."""
+
+PATH_SLICES: int = 120
+"""Number of cross-section slices along dominant axis for centerline (deterministic)."""
+
+PATH_MIN_POINTS: int = 10
+"""Minimum centerline points to return a valid path."""
+
+PATH_WINDOW_STEP_PT: float = 8.0
+"""Step (pt) when sliding windows along path for Phase B window selection."""
+
+# ----- Learned ranking (optional) -----
+ENABLE_LEARNED_RANKING: bool = False
+"""Use trained model to blend with heuristic score when True."""
+
+LEARNED_BLEND_ALPHA: float = 0.6
+"""Blend: final = alpha * heuristic + (1 - alpha) * model_score. Ignored if model missing."""
+
+# ----- Multi-label collision avoidance -----
+COLLISION_WEIGHT: float = 5.0
+"""Score penalty weight for overlap with occupied geometry (multi-label)."""
+
+COLLISION_MAX_AREA: float = 0.5
+"""Max allowed intersection area (pt²) with occupied; above this candidate is rejected."""
+
+LABEL_BUFFER_EXTRA_PT: float = 1.5
+"""Extra buffer (pt) for label collision geometry (bbox or path buffer)."""
+
+# ----- Zoom buckets -----
+ZOOM_BUCKETS_DEFAULT: tuple[int, ...] = (10, 12, 14)
+"""Default zoom bucket indices for consistent placement across zoom levels."""
+
+ZOOM_FONT_SCALE_FACTOR: float = 0.15
+"""Per-bucket font scale: font_pt = base_font * (1.0 + ZOOM_FONT_SCALE_FACTOR * bucket_index)."""
+
+ZOOM_PADDING_SCALE_FACTOR: float = 0.1
+"""Per-bucket padding scale: padding_pt = base_padding * (1.0 + ZOOM_PADDING_SCALE_FACTOR * bucket_index)."""

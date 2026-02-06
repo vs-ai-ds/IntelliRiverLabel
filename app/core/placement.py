@@ -9,17 +9,34 @@ from __future__ import annotations
 from shapely.geometry.base import BaseGeometry
 
 from app.core.candidates_a import angle_candidates_deg, generate_candidate_points
-from app.core.config import PADDING_PT, SEED
-from app.core.geometry import polygon_bounds, oriented_rectangle
+from app.core.config import (
+    COLLISION_MAX_AREA,
+    COLLISION_WEIGHT,
+    LABEL_BUFFER_EXTRA_PT,
+    PADDING_PT,
+    SEED,
+)
+from app.core.geometry import bbox_pt_to_polygon, polygon_bounds, oriented_rectangle
 from app.core.phase_b import try_phase_b_curved
 from app.core.scoring import (
     centering_score,
     fit_margin_ratio,
+    score_blended,
     score_phase_a,
 )
 from app.core.text_metrics import measure_text_pt
 from app.core.types import LabelSpec, PlacementResult
 from app.core.validate import validate_rect_inside_safe
+
+
+def _placement_to_collision_geom(result: PlacementResult, buffer_pt: float = LABEL_BUFFER_EXTRA_PT) -> BaseGeometry:
+    """Build collision geometry for a placement: Phase A = buffered bbox; Phase B = buffered path or bbox."""
+    from shapely.geometry import LineString, Polygon
+
+    if result.path_pt and len(result.path_pt) >= 2:
+        line = LineString(result.path_pt)
+        return line.buffer(buffer_pt + result.font_size_pt * 0.5) if not line.is_empty else Polygon()
+    return bbox_pt_to_polygon(result.bbox_pt, buffer_pt=buffer_pt)
 
 
 def _run_phase_a(
@@ -28,6 +45,10 @@ def _run_phase_a(
     label: LabelSpec,
     geometry_source: str,
     seed: int | None = SEED,
+    use_learned_ranking: bool = False,
+    occupied: BaseGeometry | None = None,
+    collision_weight: float = COLLISION_WEIGHT,
+    collision_max_area: float = COLLISION_MAX_AREA,
 ) -> tuple[PlacementResult | None, list[str]]:
     """
     Try internal placement. Returns (PlacementResult, warnings) or (None, warnings).
@@ -57,9 +78,26 @@ def _run_phase_a(
             ok, min_clearance_pt = validate_rect_inside_safe(safe_poly, rect)
             if not ok:
                 continue
+            collision_penalty = 0.0
+            if occupied is not None and not occupied.is_empty:
+                rect_poly = bbox_pt_to_polygon(list(rect.exterior.coords)[:4], buffer_pt=0)
+                inter = rect_poly.intersection(occupied)
+                if not inter.is_empty and inter.area > collision_max_area:
+                    continue
+                if not inter.is_empty and inter.area > 0:
+                    collision_penalty = collision_weight * (inter.area / max(rect_poly.area, 1e-6))
             fit = fit_margin_ratio(min_clearance_pt, PADDING_PT)
             centering = centering_score(cp.x, cp.y, bounds)
-            score = score_phase_a(cp.clearance, fit, centering, angle_deg)
+            heuristic_s = score_phase_a(cp.clearance, fit, centering, angle_deg) - collision_penalty
+            if use_learned_ranking:
+                from app.models.features import candidate_to_features
+                features = candidate_to_features(
+                    cp.x, cp.y, cp.clearance, angle_deg,
+                    min_clearance_pt, bounds, PADDING_PT,
+                )
+                score = score_blended(heuristic_s + collision_penalty, features, use_model=use_learned_ranking) - collision_penalty
+            else:
+                score = heuristic_s
             if score > best_score:
                 best_score = score
                 best = (cp.x, cp.y, angle_deg, min_clearance_pt, fit, centering)
@@ -135,12 +173,22 @@ def run_placement_phase_a(
     label: LabelSpec,
     geometry_source: str,
     seed: int | None = SEED,
+    use_learned_ranking: bool = False,
+    occupied: BaseGeometry | None = None,
+    collision_weight: float = COLLISION_WEIGHT,
+    collision_max_area: float = COLLISION_MAX_AREA,
 ) -> PlacementResult:
     """
     Full Phase A pipeline. Tries internal placement; if none feasible, external fallback.
-    See: docs/ALGORITHM.md, docs/PLACEMENT_SCHEMA.md.
+    When occupied is set, candidates overlapping occupied are penalized or rejected.
     """
-    result, warnings = _run_phase_a(safe_poly, river_geom, label, geometry_source, seed=seed)
+    result, warnings = _run_phase_a(
+        safe_poly, river_geom, label, geometry_source,
+        seed=seed, use_learned_ranking=use_learned_ranking,
+        occupied=occupied,
+        collision_weight=collision_weight,
+        collision_max_area=collision_max_area,
+    )
     if result is not None:
         return result
     return _external_fallback(river_geom, label, geometry_source, warnings)
@@ -154,14 +202,17 @@ def run_placement(
     seed: int | None = SEED,
     allow_phase_b: bool = False,
     padding_pt: float = PADDING_PT,
+    use_learned_ranking: bool = False,
+    occupied: BaseGeometry | None = None,
+    collision_weight: float = COLLISION_WEIGHT,
+    collision_max_area: float = COLLISION_MAX_AREA,
 ) -> PlacementResult:
     """
-    Run placement with optional Phase B. If allow_phase_b is True, tries Phase B first;
-    if it returns None, falls back to Phase A. Phase A is always the reliable path.
-    See: docs/ALGORITHM.md, docs/PLACEMENT_SCHEMA.md.
+    Run placement with optional Phase B. When occupied is set, avoids/penalizes overlap (multi-label).
+    Phase B result is rejected if it collides with occupied.
     """
     if allow_phase_b:
-        phase_b_result = try_phase_b_curved(
+        phase_b_result, phase_b_reason = try_phase_b_curved(
             river_geom,
             safe_poly,
             label,
@@ -169,11 +220,23 @@ def run_placement(
             seed,
             geometry_source=geometry_source,
         )
+        if phase_b_result is not None and occupied is not None and not occupied.is_empty:
+            coll_geom = _placement_to_collision_geom(phase_b_result)
+            inter = coll_geom.intersection(occupied)
+            if not inter.is_empty and inter.area > collision_max_area:
+                phase_b_result = None
+                phase_b_reason = "collides_with_existing"
         if phase_b_result is not None:
             return phase_b_result
-    result = run_placement_phase_a(river_geom, safe_poly, label, geometry_source, seed=seed)
+    result = run_placement_phase_a(
+        river_geom, safe_poly, label, geometry_source,
+        seed=seed, use_learned_ranking=use_learned_ranking,
+        occupied=occupied,
+        collision_weight=collision_weight,
+        collision_max_area=collision_max_area,
+    )
     if allow_phase_b:
-        from app.core.phase_b import PHASE_B_WARNING
+        reason_msg = f"Phase B attempted but failed: {phase_b_reason}"
         return PlacementResult(
             label_text=result.label_text,
             font_size_pt=result.font_size_pt,
@@ -190,6 +253,6 @@ def run_placement(
             fit_margin_ratio=result.fit_margin_ratio,
             curvature_total_deg=result.curvature_total_deg,
             straightness_ratio=result.straightness_ratio,
-            warnings=result.warnings + [PHASE_B_WARNING],
+            warnings=result.warnings + [reason_msg],
         )
     return result

@@ -1,0 +1,12 @@
+{
+  "feature_names": [
+    "clearance_pt",
+    "fit_margin_ratio",
+    "centering_score",
+    "angle_penalty",
+    "bbox_min_clearance_pt"
+  ],
+  "version": "1.0",
+  "timestamp_utc": "2026-02-06T18:36:52.577716+00:00",
+  "n_samples": 11244
+}

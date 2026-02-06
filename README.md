@@ -1,6 +1,6 @@
 # IntelliRiverLabel
 
-Places a river name label **inside** the river polygon (Phase A) with safe padding and readable placement. Optional learned ranking improves candidate selection. Outputs: `before.png`, `after.png`, `debug.png`, and `placement.json` to `reports/<run_name>/`.
+Places a river name label **inside** the river polygon (Phase A) with safe padding and readable placement. Optional learned ranking improves candidate selection. Supports **multi-label** placement with **collision avoidance**, **batch mode** (many rivers), **zoom buckets** (consistent scale by zoom), and **evaluation families** with **leaderboard** export. Outputs: `before.png`, `after.png`, `debug.png`, and `placement.json` (or `placements.json` for multi-label) to `reports/<run_name>/`.
 
 ## Demo
 
@@ -28,15 +28,9 @@ From the repo root:
 1. Create the virtual environment: `py -m venv .venv` or `python -m venv .venv`
 2. Install dependencies: `pip install -r requirements.txt` (or `.\.venv\Scripts\pip install -r requirements.txt` if not activated)
 
-## Run CLI
+## Quickstart
 
-Using explicit venv Python (recommended):
-
-```powershell
-.\.venv\Scripts\python -m app.core.runner --text "ELBE" --font-size-pt 12 --run-name demo_01
-```
-
-## Run Streamlit
+### Streamlit (UI)
 
 Run from the **repo root** (e.g. `D:\HackArena3.0\IntelliRiverLabel`) so the `app` package is found:
 
@@ -46,12 +40,25 @@ set PYTHONPATH=%CD%
 .\.venv\Scripts\python -m streamlit run app/ui/app.py
 ```
 
-Or on PowerShell:
+### Single CLI run
+
 ```powershell
-cd D:\HackArena3.0\IntelliRiverLabel
-$env:PYTHONPATH = $PWD
-.\.venv\Scripts\python -m streamlit run app/ui/app.py
+.\.venv\Scripts\python -m app.core.runner --text "ELBE" --font-size-pt 12 --run-name demo_01
 ```
+
+### Batch CLI run (directory of .wkt files)
+
+```powershell
+.\.venv\Scripts\python -m app.core.runner --batch-dir path/to/wkt_folder --labels "ELBE,MAIN" --run-name demo_01 --batch-output-dir reports
+```
+Output: `reports/batch_<run_name>/index.csv` and `cases/<case_id>/`.
+
+### Evaluation run
+
+```powershell
+.\.venv\Scripts\python -m app.core.evaluate --run-name eval_01
+```
+Or run evaluation from the Streamlit sidebar (AI & Evaluation). Outputs: `evaluation_results.csv`, `leaderboard.csv`, `leaderboard.json`, and plots under `reports/<run_name>/`.
 
 ## Validation (baselines and metrics)
 
@@ -73,10 +80,13 @@ From repo root:
 
 ### Expected outputs under `reports/eval_01/`
 
-- `evaluation_results.csv` — per-case, per-method metrics
+- `evaluation_results.csv` — per-case, per-method metrics (includes family, zoom_bucket, n_labels, collisions, duration_ms)
 - `evaluation_summary.json` — aggregated success rate and mean metrics by method
+- `leaderboard.csv` / `leaderboard.json` — aggregate per method and per family (success_rate, avg_clearance, collision_rate, etc.)
 - `plots/success_rate.png` — bar chart of success rate by method
 - `plots/min_clearance_pt.png` — distribution of min_clearance_pt by method
+- `plots/success_by_family.png` — success rate by family
+- `plots/collision_rate_by_method.png` — collision rate by method
 
 Do not commit generated artifacts under `reports/`.
 

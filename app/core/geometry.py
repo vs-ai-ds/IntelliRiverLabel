@@ -133,6 +133,19 @@ def oriented_rectangle(
     return Polygon(rotated)
 
 
+def bbox_pt_to_polygon(
+    bbox_pt: list[tuple[float, float]],
+    buffer_pt: float = 0.0,
+) -> Polygon:
+    """Build a polygon from 4-corner bbox_pt; optionally buffer. For collision geometry."""
+    if not bbox_pt or len(bbox_pt) < 3:
+        return Polygon()
+    poly = Polygon(bbox_pt)
+    if buffer_pt > 0 and not poly.is_empty:
+        poly = poly.buffer(buffer_pt)
+    return poly if not poly.is_empty else Polygon()
+
+
 def polygon_contains_with_tol(
     poly: BaseGeometry,
     rect: BaseGeometry,

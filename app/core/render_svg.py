@@ -14,6 +14,9 @@ from shapely.geometry.base import BaseGeometry
 
 from app.core.types import LabelSpec
 
+SVG_NS = "http://www.w3.org/2000/svg"
+XLINK_NS = "http://www.w3.org/1999/xlink"
+
 
 def _poly_to_svg_d(geom: BaseGeometry) -> str:
     """Single polygon exterior as SVG path d (M L ... Z)."""
@@ -50,8 +53,8 @@ def export_curved_svg(
     out_path: str | Path,
 ) -> None:
     """
-    Write self-contained SVG: polygon, path for textPath, text with halo (stroke then fill).
-    No external assets. Units in pt (geometry units). Never raises.
+    Write self-contained SVG: polygon, path for textPath, text with halo.
+    Units in pt (geometry units). Never raises.
     """
     try:
         if not path_coords:
@@ -63,85 +66,99 @@ def export_curved_svg(
     path_d = _path_coords_to_svg_d(path_coords)
     poly_d = _poly_to_svg_d(polygon) if polygon and not polygon.is_empty else ""
 
-    # Bounding box with margin
-    all_x = [c[0] for c in path_coords]
-    all_y = [c[1] for c in path_coords]
+    # viewBox bounds (geometry coords)
     try:
-        if polygon and not polygon.is_empty and polygon.bounds:
-            b = polygon.bounds
-            all_x.extend([b[0], b[2]])
-            all_y.extend([b[1], b[3]])
+        if polygon and not polygon.is_empty and getattr(polygon, "bounds", None):
+            min_x, min_y, max_x, max_y = map(float, polygon.bounds)
+        else:
+            xs = [c[0] for c in path_coords]
+            ys = [c[1] for c in path_coords]
+            min_x, min_y, max_x, max_y = min(xs), min(ys), max(xs), max(ys)
     except Exception:
-        pass
-    if not all_x:
-        all_x = [0]
-    if not all_y:
-        all_y = [0]
-    min_x = min(all_x) - 20
-    max_x = max(all_x) + 20
-    min_y = min(all_y) - 20
-    max_y = max(all_y) + 20
-    w = max(1, max_x - min_x)
-    h = max(1, max_y - min_y)
+        xs = [c[0] for c in path_coords]
+        ys = [c[1] for c in path_coords]
+        min_x, min_y, max_x, max_y = min(xs), min(ys), max(xs), max(ys)
 
-    ns = "http://www.w3.org/2000/svg"
-    ET.register_namespace("", ns)
-    root = ET.Element("svg", {
-        "xmlns": ns,
-        "xmlns:xlink": "http://www.w3.org/1999/xlink",
-        "width": f"{w:.2f}pt",
-        "height": f"{h:.2f}pt",
-        "viewBox": f"{min_x:.2f} {min_y:.2f} {w:.2f} {h:.2f}",
-    })
+    margin = 20.0
+    min_x -= margin
+    min_y -= margin
+    max_x += margin
+    max_y += margin
+    vw = max(1.0, max_x - min_x)
+    vh = max(1.0, max_y - min_y)
+
+    # IMPORTANT:
+    # - Use plain tag names (not {ns}svg) and set xmlns attributes exactly once
+    # - Use prefixed attributes like "xlink:href" (not Clark-notation {xlink}href)
+    root = ET.Element(
+        "svg",
+        {
+            "xmlns": SVG_NS,
+            "xmlns:xlink": XLINK_NS,
+            "width": "800",
+            "height": "600",
+            "viewBox": f"{min_x:.2f} {min_y:.2f} {vw:.2f} {vh:.2f}",
+            "preserveAspectRatio": "xMidYMid meet",
+        },
+    )
+
+    # Correct Y-flip for non-zero viewBox origin:
+    # y' = -y + (2*min_y + vh)
+    flip_translate_y = (2.0 * min_y) + vh
+    flip = ET.SubElement(
+        root,
+        "g",
+        {"transform": f"translate(0 {flip_translate_y:.2f}) scale(1 -1)"},
+    )
 
     if poly_d:
-        g_poly = ET.SubElement(root, "g", {"id": "polygon"})
-        ET.SubElement(g_poly, "path", {
-            "d": poly_d,
-            "fill": "lightblue",
-            "stroke": "navy",
-            "stroke-width": "1",
-        })
+        ET.SubElement(
+            flip,
+            "path",
+            {
+                "d": poly_d,
+                "fill": "lightblue",
+                "stroke": "navy",
+                "stroke-width": "1",
+            },
+        )
 
-    defs = ET.SubElement(root, "defs")
-    path_el = ET.SubElement(defs, "path", {
-        "id": "riverpath",
-        "d": path_d,
-    })
+    defs = ET.SubElement(flip, "defs")
+    ET.SubElement(defs, "path", {"id": "riverpath", "d": path_d})
 
-    g_text = ET.SubElement(root, "g", {"id": "label"})
-    # Halo: white stroke first
-    text_stroke = ET.SubElement(g_text, "text", {
-        "font-family": label_spec.font_family,
-        "font-size": f"{label_spec.font_size_pt:.2f}pt",
-        "fill": "none",
-        "stroke": "white",
-        "stroke-width": "2",
-    })
-    tpath_s = ET.SubElement(text_stroke, "textPath", {
-        "{http://www.w3.org/1999/xlink}href": "#riverpath",
-        "startOffset": "50%",
-        "text-anchor": "middle",
-    })
-    tpath_s.text = label_spec.text
+    g_text = ET.SubElement(flip, "g", {"id": "label"})
 
-    text_fill = ET.SubElement(g_text, "text", {
-        "font-family": label_spec.font_family,
-        "font-size": f"{label_spec.font_size_pt:.2f}pt",
-        "fill": "black",
-        "stroke": "none",
-    })
-    tpath_f = ET.SubElement(text_fill, "textPath", {
-        "{http://www.w3.org/1999/xlink}href": "#riverpath",
-        "startOffset": "50%",
-        "text-anchor": "middle",
-    })
-    tpath_f.text = label_spec.text
+    text = ET.SubElement(
+        g_text,
+        "text",
+        {
+            "font-family": label_spec.font_family,
+            "font-size": f"{label_spec.font_size_pt:.2f}",
+            "fill": "black",
+            "stroke": "white",
+            "stroke-width": "2.25",
+            "paint-order": "stroke",
+            "stroke-linejoin": "round",
+            "stroke-linecap": "round",
+        },
+    )
+
+    # Provide both SVG2 (href) and SVG1.1 (xlink:href) without triggering xmlns duplication
+    tpath = ET.SubElement(
+        text,
+        "textPath",
+        {
+            "href": "#riverpath",
+            "xlink:href": "#riverpath",
+            "startOffset": "50%",
+            "text-anchor": "middle",
+        },
+    )
+    tpath.text = label_spec.text
 
     try:
-        tree = ET.ElementTree(root)
-        ET.indent(tree, space="  ")
         out_str = ET.tostring(root, encoding="unicode", method="xml")
         Path(out_path).write_text('<?xml version="1.0" encoding="UTF-8"?>\n' + out_str, encoding="utf-8")
     except Exception:
         pass
+    

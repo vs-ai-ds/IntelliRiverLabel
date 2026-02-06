@@ -12,6 +12,12 @@ venv/
 # Run outputs
 reports/
 
+# Code dump (generated; do not track)
+dump/
+
+# Trained model artifact (optional; folder created by train script)
+app/models/artifacts/*.joblib
+
 # Test / tool caches
 .pytest_cache/
 .coverage
