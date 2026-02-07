@@ -128,6 +128,56 @@ def render_after(
     plt.close(fig)
 
 
+def render_after_multi(
+    river_geom: BaseGeometry,
+    placements: list[PlacementResult],
+    output_path: str | Path,
+    width_px: int = RENDER_WIDTH_PX,
+    height_px: int = RENDER_HEIGHT_PX,
+    halo_pt: float = 1.5,
+    scale: int = 1,
+) -> None:
+    """Render river with multiple labels. scale multiplies output resolution (1x, 2x, 4x)."""
+    w, h = width_px * scale, height_px * scale
+    fig, ax = _new_fig(w, h)
+    _draw_polygon(ax, river_geom, fill_alpha=1.0)
+
+    for placement in placements:
+        cx, cy = placement.anchor_pt
+        angle = placement.angle_deg
+
+        # halo
+        for dx in (-halo_pt, 0.0, halo_pt):
+            for dy in (-halo_pt, 0.0, halo_pt):
+                if dx == 0 and dy == 0:
+                    continue
+                ax.text(
+                    cx + dx, cy + dy, placement.label_text,
+                    fontsize=placement.font_size_pt,
+                    fontfamily=placement.font_family,
+                    ha="center", va="center",
+                    color="white",
+                    rotation=angle,
+                    zorder=5,
+                )
+        # fill
+        ax.text(
+            cx, cy, placement.label_text,
+            fontsize=placement.font_size_pt,
+            fontfamily=placement.font_family,
+            ha="center", va="center",
+            color="black",
+            rotation=angle,
+            zorder=6,
+        )
+
+    set_axes_to_polygon(ax, river_geom, pad_frac=0.05)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*constrained_layout.*", category=UserWarning)
+        fig.savefig(output_path, dpi=100, facecolor="white")
+    plt.close(fig)
+
+
 def render_debug(
     river_geom: BaseGeometry,
     safe_poly: BaseGeometry,

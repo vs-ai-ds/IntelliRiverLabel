@@ -68,6 +68,11 @@ except ImportError:
     select_best_component = None  # type: ignore[misc, assignment]
 from app.core.placement import run_placement
 try:
+    from app.core.multilabel import place_multiple_labels, MultiLabelResult
+except ImportError:
+    place_multiple_labels = None  # type: ignore[misc, assignment]
+    MultiLabelResult = None  # type: ignore[misc, assignment]
+try:
     from app.core.multiparts import merge_nearby_components, describe_components
 except ImportError:
     merge_nearby_components = None  # type: ignore[misc, assignment]
@@ -189,9 +194,11 @@ def _run_placement(
     k_top: int | None = None,
     collision_weight: float | None = None,
     collision_max_area: float | None = None,
+    num_labels: int | None = None,
 ) -> tuple[Path | None, str | None]:
     """
     Run placement and write to reports/<run_name>.
+    Uses multilabel placement by default for optimal label count.
     Returns (report_dir, error_key). error_key is "safe_poly_empty" or None.
     """
     repo_root = _repo_root()
@@ -208,23 +215,77 @@ def _run_placement(
             font_family=DEFAULT_FONT_FAMILY,
             font_size_pt=font_size_pt,
         )
-        result = run_placement(
-            river_geom,
-            safe_poly,
-            label,
-            geometry_source=geometry_source,
-            seed=seed,
-            allow_phase_b=curved_mode,
-            padding_pt=padding_pt,
-            use_learned_ranking=use_learned_ranking,
-            learned_alpha=learned_alpha,
-            n_sample=n_sample,
-            k_top=k_top,
-            collision_weight=collision_weight or COLLISION_WEIGHT,
-            collision_max_area=collision_max_area if collision_max_area is not None else COLLISION_MAX_AREA,
-        )
+        
+        # Use multilabel placement by default (always try, with safe fallback)
+        multi_result: MultiLabelResult | None = None
+        result = None
+        
+        # Try multilabel first - it's the default behavior
+        if place_multiple_labels is not None:
+            try:
+                multi_result = place_multiple_labels(
+                    river_geom,
+                    safe_poly,
+                    label,
+                    geometry_source=geometry_source,
+                    seed=seed,
+                    num_labels=num_labels,  # None = auto, or user-specified count
+                    follow_flow=True,  # Align with river flow
+                    use_learned_ranking=use_learned_ranking,
+                )
+                # Use the first placement as the primary result for compatibility
+                if multi_result and multi_result.placements:
+                    result = multi_result.placements[0]
+            except Exception as multilabel_err:
+                # Log but don't fail - fall back to single placement
+                logging.warning(f"Multilabel placement failed, falling back to single: {multilabel_err}")
+                multi_result = None
+        
+        # Fallback to single placement if multilabel didn't produce results
+        if result is None:
+            result = run_placement(
+                river_geom,
+                safe_poly,
+                label,
+                geometry_source=geometry_source,
+                seed=seed,
+                allow_phase_b=curved_mode,
+                padding_pt=padding_pt,
+                use_learned_ranking=use_learned_ranking,
+                learned_alpha=learned_alpha,
+                n_sample=n_sample,
+                k_top=k_top,
+                collision_weight=collision_weight or COLLISION_WEIGHT,
+                collision_max_area=collision_max_area if collision_max_area is not None else COLLISION_MAX_AREA,
+            )
+        
         report_dir = ensure_report_dir(repo_root, run_name)
         write_placement_json(report_dir, result)
+        
+        # Save multilabel info if available
+        if multi_result is not None and len(multi_result.placements) > 0:
+            multi_info = {
+                "requested_count": num_labels,  # None = auto, or user-specified
+                "optimal_count": multi_result.optimal_count,
+                "actual_count": multi_result.actual_count,
+                "coverage_ratio": multi_result.coverage_ratio,
+                "flow_angle_deg": multi_result.flow_direction.angle_deg,
+                "warnings": multi_result.warnings,
+                "placements": [
+                    {
+                        "anchor_pt": p.anchor_pt,
+                        "angle_deg": p.angle_deg,
+                        "bbox_pt": p.bbox_pt,
+                        "min_clearance_pt": p.min_clearance_pt,
+                        "mode": p.mode,
+                    }
+                    for p in multi_result.placements
+                ],
+            }
+            (report_dir / "multilabel_info.json").write_text(
+                json.dumps(multi_info, indent=2), encoding="utf-8"
+            )
+        
         if result.mode == "phase_b_curved" and result.path_pt:
             try:
                 from app.core.render_svg import export_curved_svg
@@ -269,20 +330,31 @@ def _run_placement(
                 use_learned_ranking=use_learned_ranking,
                 model_artifact_path=model_path_str,
             )
+        
         def _render_with_scale():
             try:
                 render_before(river_geom, report_dir / "before.png", scale=render_scale)
             except TypeError:
                 render_before(river_geom, report_dir / "before.png")
-            try:
-                render_after(river_geom, result, report_dir / "after.png", scale=render_scale)
-            except TypeError:
-                render_after(river_geom, result, report_dir / "after.png")
+            
+            # Render with all labels if multilabel
+            if multi_result is not None and len(multi_result.placements) > 1:
+                _render_multilabel_after(
+                    river_geom, multi_result.placements, label,
+                    report_dir / "after.png", scale=render_scale
+                )
+            else:
+                try:
+                    render_after(river_geom, result, report_dir / "after.png", scale=render_scale)
+                except TypeError:
+                    render_after(river_geom, result, report_dir / "after.png")
+            
             candidates = generate_candidate_points(safe_poly, seed=seed)
             try:
                 render_debug(river_geom, safe_poly, candidates, result, report_dir / "debug.png", scale=render_scale)
             except TypeError:
                 render_debug(river_geom, safe_poly, candidates, result, report_dir / "debug.png")
+        
         _render_with_scale()
         if "last_run_error" in st.session_state:
             del st.session_state["last_run_error"]
@@ -290,6 +362,21 @@ def _run_placement(
     except Exception as e:
         st.session_state["last_run_error"] = str(e)
         return None, None
+
+
+def _render_multilabel_after(
+    river_geom: BaseGeometry,
+    placements: list,
+    label: LabelSpec,
+    output_path: Path,
+    scale: int = 1,
+) -> None:
+    """Render river with multiple labels using matplotlib for proper coordinate handling."""
+    from app.core.render import render_after_multi
+    
+    # Use matplotlib-based renderer which correctly handles world coordinates
+    # and matches the same coordinate system used for placement
+    render_after_multi(river_geom, placements, output_path, scale=scale)
 
 
 # Session state: active_ref is the single source of truth. See run_registry.py "UI + State contract".
@@ -416,6 +503,28 @@ with st.sidebar:
     label_text = st.text_input("Label text", value="ELBE", help="Text to place on the river.")
     font_size_pt = st.number_input("Font size (pt)", min_value=1.0, value=12.0, step=0.5)
     padding_pt = st.session_state.get("padding_pt", float(PADDING_PT))
+    
+    # --- Label Count ---
+    st.subheader("Label Count")
+    label_count_mode = st.radio(
+        "Number of labels",
+        ["Auto (recommended)", "Manual"],
+        index=0,
+        help="Auto: Optimal count based on river length. Manual: Specify exact number.",
+        horizontal=True,
+    )
+    num_labels_ui: int | None = None
+    if label_count_mode == "Manual":
+        num_labels_ui = st.number_input(
+            "Labels to place",
+            min_value=1,
+            max_value=10,
+            value=st.session_state.get("num_labels_manual", 2),
+            step=1,
+            key="num_labels_manual",
+            help="Number of labels to place along the river (1-10).",
+        )
+    st.caption("Labels are placed along the river flow direction.")
 
     # --- Determinism ---
     st.subheader("Determinism")
@@ -429,10 +538,11 @@ with st.sidebar:
         seed_val = st.number_input("Seed", min_value=0, value=max(0, seed_val), step=1, help="0 or positive. Same seed = same result; Preset does not change seed.")
     seed: int | None = seed_val if use_seed else None
 
-    use_learned_ranking = False
+    # Learned ranking is always ON when model is available (ML project requirement)
+    use_learned_ranking = model_loaded
     learned_alpha = 0.6
     if model_loaded:
-        use_learned_ranking = st.checkbox("Use learned ranking", value=st.session_state.get("use_learned_ranking", False), key="use_learned_ranking", help=TOOLTIP_LEARNED)
+        st.success("**ML Model Active** — Learned ranking is enabled")
         learned_alpha = st.slider(
             "Heuristic vs model blend (alpha)",
             0.3,
@@ -443,15 +553,8 @@ with st.sidebar:
             key="learned_alpha_slider",
         )
     else:
-        st.checkbox("Use learned ranking", value=False, disabled=True)
-        st.caption("Train model to enable")
-    # Preload model when learned ranking is checked so first run is not slow
-    if use_learned_ranking and not model_loaded:
-        try:
-            from app.models.registry import load_model
-            load_model()
-        except Exception:
-            pass
+        st.warning("**ML Model Not Loaded** — Train model to enable learned ranking")
+        st.caption("Run: `python -c \"from app.models.train import train_model; train_model()\"`")
 
     # --- Output ---
     st.subheader("Output")
@@ -539,6 +642,7 @@ with st.sidebar:
                 k_top=k_top_ui if use_advanced else None,
                 collision_weight=collision_weight_ui if use_collision_override else None,
                 collision_max_area=collision_max_area_ui if use_collision_override else None,
+                num_labels=num_labels_ui,
             )
             if report_dir is not None:
                 _set_active_run(str(report_dir))
@@ -629,15 +733,13 @@ with st.sidebar:
         p = st.session_state.get("preset_sel", "None")
         if "High quality" in p:
             st.session_state["curved_mode"] = True
-            st.session_state["use_learned_ranking"] = True
             st.session_state["render_scale_option"] = 2
         elif p == "Fast (straight only)":
             st.session_state["curved_mode"] = False
-            st.session_state["use_learned_ranking"] = False
             st.session_state["render_scale_option"] = 1
         st.session_state["_preset_rerun"] = True
 
-    preset_opts = ["None", "High quality (2× scale, curved, learned)", "Fast (straight only)"]
+    preset_opts = ["None", "High quality (2× scale, curved)", "Fast (straight only)"]
     with st.expander("Phase 2", expanded=False):
         st.subheader("Modes")
         st.number_input(
@@ -835,6 +937,70 @@ with tab_demo:
                 msg = "Curved attempted: fallback to straight." + (f" Reason: {reason}" if reason else "")
                 st.warning(msg)
         ui_components.render_before_after_with_downloads(report_dir, full_width_images, "dl_demo")
+        
+        # Show multilabel info if available
+        multilabel_info_path = report_dir / "multilabel_info.json"
+        if multilabel_info_path.exists():
+            try:
+                ml_info = json.loads(multilabel_info_path.read_text(encoding="utf-8"))
+                requested = ml_info.get("requested_count")
+                actual = ml_info.get("actual_count", 1)
+                optimal = ml_info.get("optimal_count", 1)
+                flow_angle = ml_info.get("flow_angle_deg", 0)
+                coverage = ml_info.get("coverage_ratio", 0)
+                placements_data = ml_info.get("placements", [])
+                
+                st.divider()
+                st.subheader("Multi-label Placement Info")
+                
+                # Summary metrics in columns
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Labels Placed", actual)
+                with col2:
+                    st.metric("Optimal Count", optimal)
+                with col3:
+                    mode_str = "Auto" if requested is None else f"Manual"
+                    st.metric("Mode", mode_str)
+                with col4:
+                    st.metric("Flow Angle", f"{flow_angle:.1f}°")
+                
+                # Additional info
+                col5, col6 = st.columns(2)
+                with col5:
+                    st.metric("Coverage", f"{coverage:.1%}")
+                with col6:
+                    if requested is not None:
+                        st.metric("Requested", requested)
+                    else:
+                        st.metric("Requested", "Auto")
+                
+                # Placement details table
+                if placements_data:
+                    with st.expander(f"Label Placement Details ({len(placements_data)} labels)", expanded=False):
+                        table_rows = []
+                        for i, p in enumerate(placements_data, 1):
+                            anchor = p.get("anchor_pt", (0, 0))
+                            angle = p.get("angle_deg", 0)
+                            clearance = p.get("min_clearance_pt", 0)
+                            p_mode = p.get("mode", "—")
+                            table_rows.append({
+                                "#": i,
+                                "Position (x, y)": f"({anchor[0]:.1f}, {anchor[1]:.1f})",
+                                "Angle (°)": f"{angle:.1f}",
+                                "Clearance (pt)": f"{clearance:.2f}" if clearance else "—",
+                                "Mode": p_mode.replace("phase_a_", "").replace("_", " ").title() if p_mode else "—",
+                            })
+                        st.dataframe(table_rows, use_container_width=True, hide_index=True)
+                
+                # Warnings
+                if ml_info.get("warnings"):
+                    with st.expander(f"⚠️ Placement Warnings ({len(ml_info['warnings'])})", expanded=False):
+                        for w in ml_info["warnings"]:
+                            st.warning(w)
+            except Exception:
+                pass
+        
         after_svg = report_dir / "after.svg"
         if after_svg.exists() and mode_used == "phase_b_curved":
             st.subheader("Curved (SVG)")

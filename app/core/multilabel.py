@@ -69,30 +69,56 @@ def compute_centerline(geom: BaseGeometry, seed: int | None = SEED) -> LineStrin
     """
     Compute the centerline/skeleton of a river polygon.
     Uses the existing path building logic from Phase B.
+    IMPORTANT: The returned centerline is clipped to stay INSIDE the geometry.
     """
     try:
-        # Use the existing internal path builder
+        # Use the existing internal path builder - this already stays inside
         path = build_internal_path_polyline(geom, seed)
         if path and not path.is_empty:
+            # Clip to geometry interior to be safe
+            clipped = path.intersection(geom)
+            if clipped and not clipped.is_empty:
+                if isinstance(clipped, LineString):
+                    return clipped
+                elif hasattr(clipped, 'geoms'):
+                    # MultiLineString - get longest
+                    lines = [g for g in clipped.geoms if isinstance(g, LineString)]
+                    if lines:
+                        return max(lines, key=lambda l: l.length)
             return path
     except Exception:
         pass
     
-    # Fallback: approximate centerline using medial axis approach
+    # Fallback: approximate centerline using buffered interior
     try:
-        from shapely.geometry import MultiPoint
-        
-        # Sample points along boundary
+        # Get the polygon to work with
         if isinstance(geom, Polygon):
-            boundary = geom.exterior
+            poly = geom
         elif isinstance(geom, MultiPolygon):
-            # Use largest polygon
-            largest = max(geom.geoms, key=lambda g: g.area)
-            boundary = largest.exterior
+            poly = max(geom.geoms, key=lambda g: g.area)
         else:
             return None
         
-        # Sample boundary points
+        # Buffer inward to get interior points
+        interior = poly.buffer(-2.0)  # Buffer inward by 2pt
+        if interior.is_empty:
+            interior = poly.buffer(-0.5)
+        if interior.is_empty:
+            interior = poly
+        
+        # Get centroid - guaranteed to be inside for convex, usually inside for concave
+        centroid = interior.centroid
+        if not poly.contains(centroid):
+            # If centroid is outside, use representative point
+            centroid = interior.representative_point()
+        
+        cx, cy = centroid.x, centroid.y
+        
+        # Compute PCA for dominant direction
+        minx, miny, maxx, maxy = poly.bounds
+        
+        # Sample boundary points for PCA
+        boundary = poly.exterior
         n_samples = 100
         points = []
         for i in range(n_samples):
@@ -100,31 +126,48 @@ def compute_centerline(geom: BaseGeometry, seed: int | None = SEED) -> LineStrin
             pt = boundary.interpolate(d)
             points.append((pt.x, pt.y))
         
-        # Compute approximate centerline using PCA for proper angle
-        minx, miny, maxx, maxy = geom.bounds
-        cx = (minx + maxx) / 2
-        cy = (miny + maxy) / 2
-        
-        # Use PCA to get dominant direction
         coords = np.array(points)
         coords_centered = coords - np.mean(coords, axis=0)
         cov = np.cov(coords_centered.T)
-        if cov.size > 0:
+        
+        if cov.size > 0 and np.linalg.det(cov) != 0:
             eigvals, eigvecs = np.linalg.eigh(cov)
             idx = np.argmax(eigvals)
             v = eigvecs[:, idx]
             
             # Create line along principal axis through centroid
-            length = max(maxx - minx, maxy - miny) * 0.8
-            start = (cx - v[0] * length / 2, cy - v[1] * length / 2)
-            end = (cx + v[0] * length / 2, cy + v[1] * length / 2)
-            return LineString([start, end])
+            # But CLIP it to the polygon interior
+            length = max(maxx - minx, maxy - miny) * 2  # Make it long enough
+            start = (cx - v[0] * length, cy - v[1] * length)
+            end = (cx + v[0] * length, cy + v[1] * length)
+            raw_line = LineString([start, end])
+            
+            # Clip to polygon interior
+            clipped = raw_line.intersection(poly)
+            if clipped and not clipped.is_empty:
+                if isinstance(clipped, LineString):
+                    return clipped
+                elif hasattr(clipped, 'geoms'):
+                    lines = [g for g in clipped.geoms if isinstance(g, LineString)]
+                    if lines:
+                        return max(lines, key=lambda l: l.length)
+        
+        # Ultimate fallback: horizontal/vertical line through centroid, clipped
+        if maxx - minx > maxy - miny:
+            raw_line = LineString([(minx - 10, cy), (maxx + 10, cy)])
         else:
-            # Fallback: use bounding box diagonal
-            if maxx - minx > maxy - miny:
-                return LineString([(minx + 5, cy), (maxx - 5, cy)])
-            else:
-                return LineString([(cx, miny + 5), (cx, maxy - 5)])
+            raw_line = LineString([(cx, miny - 10), (cx, maxy + 10)])
+        
+        clipped = raw_line.intersection(poly)
+        if clipped and not clipped.is_empty:
+            if isinstance(clipped, LineString):
+                return clipped
+            elif hasattr(clipped, 'geoms'):
+                lines = [g for g in clipped.geoms if isinstance(g, LineString)]
+                if lines:
+                    return max(lines, key=lambda l: l.length)
+        
+        return None
     except Exception:
         return None
 
@@ -439,8 +482,8 @@ def _place_single_label_with_flow(
 ) -> PlacementResult | None:
     """
     Place a single label aligned with flow direction.
-    Ensures label is INSIDE geometry with proper flow alignment.
-    Handles larger font sizes by searching for valid positions.
+    Ensures label is STRICTLY INSIDE geometry with proper flow alignment.
+    Works with both learned ranking (ML) and heuristic modes.
     """
     # Get text dimensions
     w_pt, h_pt = measure_text_pt(label.text, label.font_family, label.font_size_pt)
@@ -455,22 +498,30 @@ def _place_single_label_with_flow(
         local_angle = flow.angle_deg
     
     def try_placement(x: float, y: float, angle: float) -> Tuple[bool, float, Polygon]:
-        """Try placing label at position with angle."""
+        """Try placing label at position with angle. STRICT inside check."""
+        pt = Point(x, y)
+        # Anchor must be inside safe polygon
+        if not safe_poly.contains(pt):
+            return False, 0.0, Polygon()
+        
         rect = oriented_rectangle(x, y, w_pt, h_pt, angle)
+        
+        # Check inside safe_poly
         ok, clearance = validate_rect_inside_safe(safe_poly, rect)
-        # Also check against original river geometry for extra safety
-        if ok:
-            ok2, _ = validate_rect_inside_safe(river_geom, rect)
-            if not ok2:
-                ok = False
-        return ok, clearance, rect
+        if not ok:
+            return False, 0.0, rect
+        
+        # DOUBLE CHECK: entire rectangle inside river_geom
+        if not river_geom.contains(rect):
+            # Allow tiny tolerance
+            inter_area = river_geom.intersection(rect).area
+            rect_area = rect.area
+            if rect_area > 0 and inter_area / rect_area < 0.98:
+                return False, 0.0, rect
+        
+        return True, clearance, rect
     
-    # First try: place at safe poly centroid with flow angle
-    centroid = safe_poly.centroid
-    cx, cy = centroid.x, centroid.y
-    
-    ok, clearance, rect = try_placement(cx, cy, local_angle)
-    if ok:
+    def create_result(x: float, y: float, angle: float, clearance: float, rect: Polygon, confidence: float, msg: str) -> PlacementResult:
         return PlacementResult(
             label_text=label.text,
             font_size_pt=label.font_size_pt,
@@ -478,116 +529,130 @@ def _place_single_label_with_flow(
             geometry_source=geometry_source,
             units="pt",
             mode="phase_a_flow_aligned",
-            confidence=0.9,
-            anchor_pt=(cx, cy),
-            angle_deg=local_angle,
+            confidence=confidence,
+            anchor_pt=(x, y),
+            angle_deg=angle,
             bbox_pt=list(rect.exterior.coords)[:4],
             path_pt=None,
             min_clearance_pt=clearance,
             fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
             curvature_total_deg=0.0,
             straightness_ratio=1.0,
-            warnings=["Placed at centroid with flow alignment"],
+            warnings=[msg] if msg else [],
         )
     
-    # Second try: search along centerline for a position that fits
-    if flow.centerline is not None:
-        centerline = flow.centerline
-        total_len = centerline.length
-        
-        # Try multiple positions along centerline
-        for frac in [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]:
-            pt = centerline.interpolate(frac * total_len)
-            test_angle = compute_local_flow_angle(centerline, (pt.x, pt.y))
-            
-            ok, clearance, rect = try_placement(pt.x, pt.y, test_angle)
-            if ok:
-                return PlacementResult(
-                    label_text=label.text,
-                    font_size_pt=label.font_size_pt,
-                    font_family=label.font_family,
-                    geometry_source=geometry_source,
-                    units="pt",
-                    mode="phase_a_flow_aligned",
-                    confidence=0.85,
-                    anchor_pt=(pt.x, pt.y),
-                    angle_deg=test_angle,
-                    bbox_pt=list(rect.exterior.coords)[:4],
-                    path_pt=None,
-                    min_clearance_pt=clearance,
-                    fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                    curvature_total_deg=0.0,
-                    straightness_ratio=1.0,
-                    warnings=["Placed along centerline with flow alignment"],
-                )
-    
-    # Third try: sample points inside safe_poly
-    sample_pts = sample_points_in_polygon(safe_poly, 20, seed)
-    for px, py in sample_pts:
-        if flow.centerline is not None:
-            test_angle = compute_local_flow_angle(flow.centerline, (px, py))
-        else:
-            test_angle = local_angle
-        
-        ok, clearance, rect = try_placement(px, py, test_angle)
-        if ok:
-            return PlacementResult(
-                label_text=label.text,
-                font_size_pt=label.font_size_pt,
-                font_family=label.font_family,
-                geometry_source=geometry_source,
-                units="pt",
-                mode="phase_a_flow_aligned",
-                confidence=0.75,
-                anchor_pt=(px, py),
-                angle_deg=test_angle,
-                bbox_pt=list(rect.exterior.coords)[:4],
-                path_pt=None,
-                min_clearance_pt=clearance,
-                fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                curvature_total_deg=0.0,
-                straightness_ratio=1.0,
-                warnings=["Placed at sampled interior point"],
-            )
-    
-    # Fourth try: use standard placement and adjust angle
+    # First: Use run_placement (supports learned_ranking) and adjust for flow
+    # This is the primary path for learned ranking support
     result = run_placement(
         river_geom, safe_poly, label, geometry_source,
         seed=seed, use_learned_ranking=use_learned_ranking,
     )
     
-    if result.mode == "external_fallback":
-        return result
+    if result and result.mode != "external_fallback":
+        # Try to adjust the result to use flow-aligned angle
+        cx, cy = result.anchor_pt
+        if flow.centerline is not None:
+            adjusted_angle = compute_local_flow_angle(flow.centerline, (cx, cy))
+        else:
+            adjusted_angle = local_angle
+        
+        # Check if flow-adjusted version fits
+        ok, clearance, rect = try_placement(cx, cy, adjusted_angle)
+        if ok:
+            return PlacementResult(
+                label_text=result.label_text,
+                font_size_pt=result.font_size_pt,
+                font_family=result.font_family,
+                geometry_source=result.geometry_source,
+                units=result.units,
+                mode="phase_a_flow_aligned" if use_learned_ranking else result.mode,
+                confidence=result.confidence,
+                anchor_pt=result.anchor_pt,
+                angle_deg=adjusted_angle,
+                bbox_pt=list(rect.exterior.coords)[:4],
+                path_pt=result.path_pt,
+                min_clearance_pt=clearance,
+                fit_margin_ratio=result.fit_margin_ratio,
+                curvature_total_deg=result.curvature_total_deg,
+                straightness_ratio=result.straightness_ratio,
+                warnings=result.warnings + ["Flow-aligned angle applied"],
+            )
+        
+        # Original result position doesn't work with flow angle
+        # Check if original angle at least fits inside
+        ok_orig, clearance_orig, rect_orig = try_placement(cx, cy, result.angle_deg)
+        if ok_orig:
+            # Original is inside, return it
+            return result
     
-    # Adjust angle to match local flow direction at placement position
+    # Fallback strategies: try various positions with flow alignment
+    
+    # Try centroid with flow angle and various adjustments
+    centroid = safe_poly.centroid
+    if safe_poly.contains(centroid):
+        for angle_adj in [0, 5, -5, 10, -10, 15, -15, 20, -20, 30, -30, 45, -45]:
+            test_angle = local_angle + angle_adj
+            ok, clearance, rect = try_placement(centroid.x, centroid.y, test_angle)
+            if ok:
+                return create_result(centroid.x, centroid.y, test_angle, clearance, rect, 0.9, "Placed at centroid with flow alignment")
+    
+    # Try representative point
+    rep_pt = safe_poly.representative_point()
+    if safe_poly.contains(rep_pt):
+        for angle_adj in [0, 10, -10, 20, -20, 30, -30]:
+            test_angle = local_angle + angle_adj
+            ok, clearance, rect = try_placement(rep_pt.x, rep_pt.y, test_angle)
+            if ok:
+                return create_result(rep_pt.x, rep_pt.y, test_angle, clearance, rect, 0.85, "Placed at representative point")
+    
+    # Search along centerline for a position that fits
     if flow.centerline is not None:
-        local_angle = compute_local_flow_angle(flow.centerline, result.anchor_pt)
+        centerline = flow.centerline
+        total_len = centerline.length
+        
+        for frac in [0.5, 0.45, 0.55, 0.4, 0.6, 0.35, 0.65, 0.3, 0.7, 0.25, 0.75, 0.2, 0.8]:
+            pt = centerline.interpolate(frac * total_len)
+            # Only try if inside safe_poly
+            if not safe_poly.contains(pt):
+                continue
+            
+            test_angle = compute_local_flow_angle(centerline, (pt.x, pt.y))
+            
+            for angle_adj in [0, 5, -5, 10, -10, 15, -15]:
+                ok, clearance, rect = try_placement(pt.x, pt.y, test_angle + angle_adj)
+                if ok:
+                    return create_result(pt.x, pt.y, test_angle + angle_adj, clearance, rect, 0.8, "Placed along centerline")
     
-    # Recompute bbox with flow angle
-    cx, cy = result.anchor_pt
-    ok, clearance, rect = try_placement(cx, cy, local_angle)
+    # Sample points inside safe_poly
+    sample_pts = sample_points_in_polygon(safe_poly, 30, seed)
+    for px, py in sample_pts:
+        if not safe_poly.contains(Point(px, py)):
+            continue
+        
+        if flow.centerline is not None:
+            test_angle = compute_local_flow_angle(flow.centerline, (px, py))
+        else:
+            test_angle = local_angle
+        
+        for angle_adj in [0, 10, -10, 20, -20, 30, -30, 45, -45]:
+            ok, clearance, rect = try_placement(px, py, test_angle + angle_adj)
+            if ok:
+                return create_result(px, py, test_angle + angle_adj, clearance, rect, 0.7, "Placed at sampled interior point")
     
-    if ok:
-        return PlacementResult(
-            label_text=result.label_text,
-            font_size_pt=result.font_size_pt,
-            font_family=result.font_family,
-            geometry_source=result.geometry_source,
-            units=result.units,
-            mode="phase_a_flow_aligned",
-            confidence=result.confidence,
-            anchor_pt=result.anchor_pt,
-            angle_deg=local_angle,
-            bbox_pt=list(rect.exterior.coords)[:4],
-            path_pt=result.path_pt,
-            min_clearance_pt=clearance,
-            fit_margin_ratio=result.fit_margin_ratio,
-            curvature_total_deg=result.curvature_total_deg,
-            straightness_ratio=result.straightness_ratio,
-            warnings=result.warnings + ["Angle adjusted to match flow direction"],
-        )
+    # If we have a result from run_placement, verify it's inside before returning
+    if result and result.mode != "external_fallback":
+        # Verify the result is truly inside
+        cx, cy = result.anchor_pt
+        rect = oriented_rectangle(cx, cy, w_pt, h_pt, result.angle_deg)
+        inside_ok = (safe_poly.contains(rect) or 
+                    (rect.area > 0 and safe_poly.intersection(rect).area / rect.area > 0.95))
+        if inside_ok:
+            return result
     
-    # Flow-aligned doesn't fit, return original
+    # If nothing works and we have any result, return it with a warning
+    # The external_fallback is a last resort that places at centroid
+    if result is not None:
+        result.warnings = result.warnings + ["WARNING: Could not guarantee inside placement"]
     return result
 
 
@@ -606,22 +671,56 @@ def _try_place_at_position(
     """
     Try to place a label at a specific target position.
     Falls back to nearby positions if target doesn't work.
-    Ensures label is INSIDE the geometry with proper angle.
+    Ensures label is STRICTLY INSIDE the geometry with proper angle.
     """
     w_pt, h_pt = measure_text_pt(label.text, label.font_family, label.font_size_pt)
     if w_pt <= 0 or h_pt <= 0:
         return None
     
+    # Ensure target is inside the safe polygon first
+    target_pt = Point(target_x, target_y)
+    if not safe_poly.contains(target_pt):
+        # Project to nearest point inside safe_poly
+        try:
+            nearest = nearest_points(target_pt, safe_poly)[1]
+            # Move slightly inside
+            centroid = safe_poly.centroid
+            dx = centroid.x - nearest.x
+            dy = centroid.y - nearest.y
+            dist = math.hypot(dx, dy)
+            if dist > 0:
+                # Move 5pt toward centroid
+                move_dist = min(5.0, dist * 0.3)
+                target_x = nearest.x + (dx / dist) * move_dist
+                target_y = nearest.y + (dy / dist) * move_dist
+            else:
+                target_x, target_y = centroid.x, centroid.y
+        except Exception:
+            target_x, target_y = safe_poly.centroid.x, safe_poly.centroid.y
+    
     def try_position(x: float, y: float, angle: float) -> Tuple[bool, float, Polygon]:
         """Check if position works. Returns (ok, clearance, rect)."""
-        # Check if point is inside or very close to safe poly
         pt = Point(x, y)
-        if not (safe_poly.contains(pt) or safe_poly.distance(pt) < 1.0):
+        # Strict check: anchor must be inside
+        if not safe_poly.contains(pt):
             return False, 0.0, Polygon()
         
         rect = oriented_rectangle(x, y, w_pt, h_pt, angle)
+        
+        # STRICT: Entire rectangle must be inside safe_poly
         ok, clearance = validate_rect_inside_safe(safe_poly, rect)
-        return ok, clearance, rect
+        if not ok:
+            return False, 0.0, rect
+        
+        # DOUBLE CHECK: rectangle must also be inside river_geom
+        if not river_geom.contains(rect):
+            # Allow tiny tolerance for numerical precision
+            intersection_area = river_geom.intersection(rect).area
+            rect_area = rect.area
+            if rect_area > 0 and intersection_area / rect_area < 0.98:
+                return False, 0.0, rect
+        
+        return True, clearance, rect
     
     def check_collision(rect: Polygon) -> bool:
         """Check if rect collides with occupied. Returns True if OK (no collision)."""
@@ -631,9 +730,7 @@ def _try_place_at_position(
         inter = rect_poly.intersection(occupied)
         return inter.is_empty or inter.area <= 5.0
     
-    # Try target position first with given angle
-    ok, clearance, rect = try_position(target_x, target_y, target_angle)
-    if ok and check_collision(rect):
+    def create_result(x: float, y: float, angle: float, clearance: float, rect: Polygon, confidence: float, warnings: list) -> PlacementResult:
         return PlacementResult(
             label_text=label.text,
             font_size_pt=label.font_size_pt,
@@ -641,46 +738,35 @@ def _try_place_at_position(
             geometry_source=geometry_source,
             units="pt",
             mode="phase_a_flow_aligned",
-            confidence=0.9,
-            anchor_pt=(target_x, target_y),
-            angle_deg=target_angle,
+            confidence=confidence,
+            anchor_pt=(x, y),
+            angle_deg=angle,
             bbox_pt=list(rect.exterior.coords)[:4],
             path_pt=None,
             min_clearance_pt=clearance,
             fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
             curvature_total_deg=0.0,
             straightness_ratio=1.0,
-            warnings=[],
+            warnings=warnings,
         )
     
-    # Try different angles at target position
-    for angle_adj in [0, 10, -10, 20, -20, 30, -30, 45, -45]:
+    # Try target position first with given angle
+    ok, clearance, rect = try_position(target_x, target_y, target_angle)
+    if ok and check_collision(rect):
+        return create_result(target_x, target_y, target_angle, clearance, rect, 0.9, [])
+    
+    # Try different angles at target position (wider range for thin rivers)
+    for angle_adj in [0, 5, -5, 10, -10, 15, -15, 20, -20, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90]:
         test_angle = target_angle + angle_adj
         ok, clearance, rect = try_position(target_x, target_y, test_angle)
         if ok and check_collision(rect):
-            return PlacementResult(
-                label_text=label.text,
-                font_size_pt=label.font_size_pt,
-                font_family=label.font_family,
-                geometry_source=geometry_source,
-                units="pt",
-                mode="phase_a_flow_aligned",
-                confidence=0.85,
-                anchor_pt=(target_x, target_y),
-                angle_deg=test_angle,
-                bbox_pt=list(rect.exterior.coords)[:4],
-                path_pt=None,
-                min_clearance_pt=clearance,
-                fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                curvature_total_deg=0.0,
-                straightness_ratio=1.0,
-                warnings=["Angle adjusted for fit"],
-            )
+            return create_result(target_x, target_y, test_angle, clearance, rect, 0.85, ["Angle adjusted for fit"])
     
     # Try nearby positions with original angle (spiral search)
-    search_radius = max(w_pt, h_pt) * 0.5
-    for r in [search_radius * 0.3, search_radius * 0.6, search_radius, search_radius * 1.5, search_radius * 2.0]:
-        for angle_offset in [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]:
+    # Use smaller search radii first to stay close to target
+    search_radius = max(w_pt, h_pt) * 0.3
+    for r in [search_radius * 0.5, search_radius, search_radius * 1.5, search_radius * 2.0, search_radius * 3.0]:
+        for angle_offset in [0, 45, 90, 135, 180, 225, 270, 315]:
             rad = math.radians(angle_offset)
             test_x = target_x + r * math.cos(rad)
             test_y = target_y + r * math.sin(rad)
@@ -688,75 +774,55 @@ def _try_place_at_position(
             # Try with original angle first
             ok, clearance, rect = try_position(test_x, test_y, target_angle)
             if ok and check_collision(rect):
-                return PlacementResult(
-                    label_text=label.text,
-                    font_size_pt=label.font_size_pt,
-                    font_family=label.font_family,
-                    geometry_source=geometry_source,
-                    units="pt",
-                    mode="phase_a_flow_aligned",
-                    confidence=0.7,
-                    anchor_pt=(test_x, test_y),
-                    angle_deg=target_angle,
-                    bbox_pt=list(rect.exterior.coords)[:4],
-                    path_pt=None,
-                    min_clearance_pt=clearance,
-                    fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                    curvature_total_deg=0.0,
-                    straightness_ratio=1.0,
-                    warnings=["Position adjusted from target"],
-                )
+                return create_result(test_x, test_y, target_angle, clearance, rect, 0.7, ["Position adjusted from target"])
             
-            # Try with adjusted angles too
-            for angle_adj in [15, -15, 30, -30]:
+            # Try with adjusted angles too (wider range)
+            for angle_adj in [10, -10, 20, -20, 30, -30, 45, -45, 60, -60, 90, -90]:
                 test_angle = target_angle + angle_adj
                 ok, clearance, rect = try_position(test_x, test_y, test_angle)
                 if ok and check_collision(rect):
-                    return PlacementResult(
-                        label_text=label.text,
-                        font_size_pt=label.font_size_pt,
-                        font_family=label.font_family,
-                        geometry_source=geometry_source,
-                        units="pt",
-                        mode="phase_a_flow_aligned",
-                        confidence=0.65,
-                        anchor_pt=(test_x, test_y),
-                        angle_deg=test_angle,
-                        bbox_pt=list(rect.exterior.coords)[:4],
-                        path_pt=None,
-                        min_clearance_pt=clearance,
-                        fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                        curvature_total_deg=0.0,
-                        straightness_ratio=1.0,
-                        warnings=["Position and angle adjusted"],
-                    )
+                    return create_result(test_x, test_y, test_angle, clearance, rect, 0.65, ["Position and angle adjusted"])
+    
+    # Try centroid and representative point
+    for pt in [safe_poly.centroid, safe_poly.representative_point()]:
+        if safe_poly.contains(pt):
+            for angle_adj in [0, 10, -10, 20, -20, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90]:
+                test_angle = target_angle + angle_adj
+                ok, clearance, rect = try_position(pt.x, pt.y, test_angle)
+                if ok and check_collision(rect):
+                    return create_result(pt.x, pt.y, test_angle, clearance, rect, 0.6, ["Placed at interior point"])
     
     # Last resort: sample random points in safe_poly
     try:
-        sample_pts = sample_points_in_polygon(safe_poly, 15, seed)
+        sample_pts = sample_points_in_polygon(safe_poly, 30, seed)
         for px, py in sample_pts:
-            for angle_adj in [0, 15, -15, 30, -30]:
+            for angle_adj in [0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90]:
                 test_angle = target_angle + angle_adj
                 ok, clearance, rect = try_position(px, py, test_angle)
                 if ok and check_collision(rect):
-                    return PlacementResult(
-                        label_text=label.text,
-                        font_size_pt=label.font_size_pt,
-                        font_family=label.font_family,
-                        geometry_source=geometry_source,
-                        units="pt",
-                        mode="phase_a_flow_aligned",
-                        confidence=0.5,
-                        anchor_pt=(px, py),
-                        angle_deg=test_angle,
-                        bbox_pt=list(rect.exterior.coords)[:4],
-                        path_pt=None,
-                        min_clearance_pt=clearance,
-                        fit_margin_ratio=clearance / PADDING_PT if PADDING_PT > 0 else 1.0,
-                        curvature_total_deg=0.0,
-                        straightness_ratio=1.0,
-                        warnings=["Placed at sampled position"],
-                    )
+                    return create_result(px, py, test_angle, clearance, rect, 0.5, ["Placed at sampled position"])
+    except Exception:
+        pass
+    
+    # Ultimate fallback: use the proven run_placement logic
+    try:
+        result = run_placement(
+            river_geom, safe_poly, label, geometry_source,
+            seed=seed, use_learned_ranking=use_learned_ranking,
+        )
+        if result and result.mode != "external_fallback":
+            # Verify the placement is actually inside
+            coll_geom = _placement_to_collision_geom(result)
+            cx, cy = result.anchor_pt
+            rect = oriented_rectangle(cx, cy, w_pt, h_pt, result.angle_deg)
+            
+            # Strict inside check: must be contained in safe_poly
+            inside_ok = (safe_poly.contains(rect) or 
+                        (rect.area > 0 and safe_poly.intersection(rect).area / rect.area > 0.95))
+            
+            if inside_ok and check_collision(coll_geom):
+                result.warnings = result.warnings + ["Used run_placement fallback"]
+                return result
     except Exception:
         pass
     

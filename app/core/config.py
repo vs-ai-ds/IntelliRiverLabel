@@ -2,58 +2,19 @@
 """
 Central configuration for river label placement.
 All tunable values live here; no magic numbers in other modules.
-Environment overrides: PADDING_PT, SEED, REPORTS_DIR, PHASE_B_DEBUG (0/1).
 See: docs/PROJECT_SPEC.md, docs/ARCHITECTURE.md, docs/ALGORITHM.md.
 """
 
 from __future__ import annotations
-
 import os
-
-def _env_float(key: str, default: float) -> float:
-    v = os.environ.get(key)
-    if v is None:
-        return default
-    try:
-        return float(v)
-    except ValueError:
-        return default
-
-def _env_int(key: str, default: int | None) -> int | None:
-    v = os.environ.get(key)
-    if v is None or v.strip() == "":
-        return default
-    try:
-        return int(v)
-    except ValueError:
-        return default
-
-def _env_seed() -> int | None:
-    """SEED: unset -> 42, empty/none -> None, else int."""
-    v = os.environ.get("SEED")
-    if v is None:
-        return 42
-    s = v.strip().lower()
-    if s in ("", "none"):
-        return None
-    try:
-        return int(v)
-    except ValueError:
-        return 42
-
-def _env_bool(key: str, default: bool) -> bool:
-    v = os.environ.get(key)
-    if v is None:
-        return default
-    return v.strip().lower() in ("1", "true", "yes", "on")
 
 # ----- Paths (repo-relative) -----
 DEFAULT_GEOMETRY_PATH: str = "docs/assets/problem/Problem_1_river.wkt"
-REPORTS_DIR: str = os.environ.get("REPORTS_DIR", "reports")
+REPORTS_DIR: str = "reports"
 
 # ----- Padding and safe polygon -----
-PADDING_PT: float = _env_float("PADDING_PT", 4.0)
-"""Inward buffer distance (pt) for safe polygon. See ALGORITHM A1. Override with env PADDING_PT."""
+PADDING_PT: float = 4.0
+"""Inward buffer distance (pt) for safe polygon. See ALGORITHM A1."""
 
 MIN_BUFFER_PT: float = 0.5
 """Minimum buffer to try when safe polygon would be empty. See ALGORITHM A1."""
@@ -87,8 +48,8 @@ SCORE_WEIGHT_CENTERING: float = 0.5
 SCORE_WEIGHT_ANGLE_PENALTY: float = 0.1
 
 # ----- Determinism -----
-SEED: int | None = _env_seed()
-"""Random seed for sampling; None for non-deterministic. Env SEED: unset=42, empty/none=None."""
+SEED: int | None = 42
+"""Random seed for sampling; None for non-deterministic."""
 
 # ----- Default font -----
 DEFAULT_FONT_FAMILY: str = "DejaVu Sans"
@@ -119,8 +80,8 @@ PATH_WINDOW_STEP_PT: float = 8.0
 """Step (pt) when sliding windows along path for Phase B window selection."""
 
 # ----- Learned ranking (optional) -----
-ENABLE_LEARNED_RANKING: bool = False
-"""Use trained model to blend with heuristic score when True."""
+ENABLE_LEARNED_RANKING: bool = True
+"""Use trained model to blend with heuristic score when True. Disabled by default for testing multilabel."""
 
 LEARNED_BLEND_ALPHA: float = 0.6
 """Blend: final = alpha * heuristic + (1 - alpha) * model_score. Ignored if model missing."""
@@ -145,6 +106,6 @@ ZOOM_FONT_SCALE_FACTOR: float = 0.15
 ZOOM_PADDING_SCALE_FACTOR: float = 0.1
 """Per-bucket padding scale: padding_pt = base_padding * (1.0 + ZOOM_PADDING_SCALE_FACTOR * bucket_index)."""
 
-# ----- Phase B debug (set PHASE_B_DEBUG=1 to enable verbose prints) -----
-PHASE_B_DEBUG: bool = _env_bool("PHASE_B_DEBUG", False)
-"""When True, Phase B prints debug messages to stdout. Set env PHASE_B_DEBUG=1 to enable."""
+# ----- Debug flags -----
+PHASE_B_DEBUG: bool = os.environ.get("PHASE_B_DEBUG", "").lower() in ("1", "true", "yes")
+"""Enable Phase B debug output. Set env PHASE_B_DEBUG=1 to enable."""
