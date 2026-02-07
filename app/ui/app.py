@@ -185,6 +185,15 @@ def _run_placement(
                 export_curved_svg(river_geom, label, result.path_pt, report_dir / "after.svg")
             except Exception:
                 pass
+        model_path_str: str | None = None
+        if use_learned_ranking:
+            try:
+                from app.models.registry import get_model_metadata
+                meta = get_model_metadata()
+                if meta and meta.get("artifact_path"):
+                    model_path_str = meta["artifact_path"]
+            except Exception:
+                pass
         write_run_metadata_json(
             report_dir,
             run_name,
@@ -193,6 +202,10 @@ def _run_placement(
             font_size_pt,
             padding_pt,
             seed,
+            render_scale=render_scale,
+            curved_mode=curved_mode,
+            use_learned_ranking=use_learned_ranking,
+            model_artifact_path=model_path_str,
         )
         def _render_with_scale():
             try:
@@ -242,6 +255,22 @@ except Exception:
 # ----- Sidebar -----
 with st.sidebar:
     st.header("IntelliRiverLabel")
+
+    # --- First run guide ---
+    with st.expander("First run guide", expanded=False):
+        st.markdown(
+            "1. **Load geometry** — Use default path, upload a .wkt file, or paste WKT.\n"
+            "2. Optionally enable **Curved label (Phase B)** and/or **Use learned ranking** (after training).\n"
+            "3. Click **Run demo**.\n"
+            "4. Open the **Demo** tab to see before/after and download results."
+        )
+
+    # --- Current run ---
+    _active = st.session_state.get("active_report_dir") or st.session_state.get("last_report_dir")
+    _run_name = st.session_state.get("last_run_name", "")
+    if _active and _run_name:
+        st.caption(f"**Current run:** {_run_name}")
+    st.divider()
 
     # --- Geometry source ---
     st.subheader("Geometry source")
@@ -300,11 +329,18 @@ with st.sidebar:
     st.subheader("Inputs")
     label_text = st.text_input("Label text", value="ELBE", help="Text to place on the river.")
     font_size_pt = st.number_input("Font size (pt)", min_value=1.0, value=12.0, step=0.5)
-    padding_pt = st.number_input("Padding (pt)", min_value=0.0, value=float(PADDING_PT), step=0.5)
+    padding_pt = st.number_input(
+        "Padding (pt)", min_value=0.0, value=float(PADDING_PT), step=0.5,
+        help="Inward margin (pt) from river boundary; label must fit inside the shrunk polygon.",
+    )
 
     # --- Determinism ---
     st.subheader("Determinism")
-    use_seed = st.checkbox("Deterministic (use seed)", value=True)
+    use_seed = st.checkbox(
+        "Deterministic (use seed)",
+        value=True,
+        help="Same seed = same result every time. Uncheck for random variation.",
+    )
     seed_val = SEED or 42
     if use_seed:
         seed_val = st.number_input("Seed", min_value=0, value=seed_val, step=1)
@@ -322,14 +358,40 @@ with st.sidebar:
 
     # --- Output ---
     st.subheader("Output")
-    render_scale_option = st.selectbox("Render scale", [1, 2, 4], format_func=lambda x: f"{x}x", index=1, help="Higher scale = larger PNG resolution.")
-    run_name_raw = st.text_input("Output folder name", value="demo_01", help="Reports subfolder; sanitized to safe characters.")
+    render_scale_option = st.selectbox(
+        "Render scale",
+        [1, 2, 4],
+        format_func=lambda x: f"{x}x",
+        index=1,
+        help="1x=800×600, 2x=1600×1200, 4x=3200×2400. Only affects PNG size, not placement.",
+    )
+    run_name_raw = st.text_input(
+        "Output folder name",
+        value="demo_01",
+        help="Reports subfolder (e.g. reports/demo_01/). Sanitized to safe characters.",
+    )
     run_name = _sanitize_output_folder_name(run_name_raw)
     if run_name != (run_name_raw or "").strip():
         st.caption(f"Using: {run_name}")
+    # Run name uniqueness: avoid overwriting
+    _reports_base = _repo_root() / REPORTS_DIR
+    _run_dir = _reports_base / run_name
+    if _run_dir.exists() and _run_dir.is_dir():
+        st.warning(f"Folder already exists: {run_name}. Run will overwrite it, or choose a different name.")
     run_clicked = st.button("Run demo", type="primary")
+    run_again_clicked = st.button("Run again (same options, new name)", help="Re-run with current geometry and options; uses a new folder name automatically.")
 
-    if run_clicked:
+    # Run again: use new name and trigger run
+    if run_again_clicked and geom_for_run is not None:
+        base = st.session_state.get("last_run_name") or "demo_01"
+        stamp = datetime.now(timezone.utc).strftime("%H%M%S")
+        st.session_state["run_again_name"] = f"{base}_{stamp}"
+        st.session_state["trigger_run_again"] = True
+        st.rerun()
+
+    if run_clicked or st.session_state.pop("trigger_run_again", False):
+        if st.session_state.get("run_again_name"):
+            run_name = _sanitize_output_folder_name(st.session_state.pop("run_again_name", run_name))
         ok, err = _validate_label_text(label_text)
         if not ok:
             st.error(err)
@@ -356,6 +418,7 @@ with st.sidebar:
             )
             if report_dir is not None:
                 st.session_state["active_report_dir"] = str(report_dir)
+                st.session_state["show_demo_tab_banner"] = True  # prompt user to open Demo tab
                 placement_path = report_dir / "placement.json"
                 mode_used = ""
                 if placement_path.exists():
@@ -555,6 +618,8 @@ tab_demo, tab_debug, tab_export, tab_compare, tab_batch, tab_evaluate = st.tabs(
 
 with tab_demo:
     st.header("Demo")
+    if st.session_state.pop("show_demo_tab_banner", False):
+        st.success("Results ready below. Use the download buttons to save images and check the Export tab for a single zip.")
     display_dir = active_dir
     full_width_images = st.toggle("Full-width images", value=False)
     if display_dir:
@@ -632,31 +697,54 @@ with tab_export:
     export_dir = st.session_state.get("active_report_dir") or active_dir
     if export_dir:
         report_dir = Path(export_dir)
-        placement_path = report_dir / "placement.json"
-        if placement_path.exists():
-            st.download_button(
-                "Download placement.json",
-                data=placement_path.read_bytes(),
-                file_name="placement.json",
-                mime="application/json",
-            )
-        for name in ("before.png", "after.png", "debug.png"):
-            p = report_dir / name
+        # Download all as zip
+        import zipfile
+        import io
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in ("placement.json", "run_metadata.json", "before.png", "after.png", "debug.png", "after.svg"):
+                p = report_dir / name
+                if p.exists():
+                    zf.write(p, name)
+        zip_buffer.seek(0)
+        st.download_button(
+            "Download all (zip)",
+            data=zip_buffer,
+            file_name=f"{report_dir.name}_export.zip",
+            mime="application/zip",
+            key="dl_export_all_zip",
+        )
+        st.caption("Contains placement.json, run_metadata.json, before/after/debug PNGs, and after.svg if present.")
+        st.divider()
+        # Individual files with size and last modified
+        def _file_info(path: Path) -> tuple[str, int, str]:
+            if not path.exists():
+                return ("—", 0, "—")
+            try:
+                stat = path.stat()
+                size = stat.st_size
+                mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                return (f"{size:,} B", size, mtime)
+            except Exception:
+                return ("—", 0, "—")
+        files_to_show = [
+            ("placement.json", report_dir / "placement.json", "application/json"),
+            ("run_metadata.json", report_dir / "run_metadata.json", "application/json"),
+            ("before.png", report_dir / "before.png", "image/png"),
+            ("after.png", report_dir / "after.png", "image/png"),
+            ("debug.png", report_dir / "debug.png", "image/png"),
+            ("after.svg", report_dir / "after.svg", "image/svg+xml"),
+        ]
+        for label, p, mime in files_to_show:
             if p.exists():
+                size_str, _, mtime_str = _file_info(p)
                 st.download_button(
-                    f"Download {name}",
+                    f"Download {label} ({size_str}, {mtime_str})",
                     data=p.read_bytes(),
-                    file_name=name,
-                    mime="image/png",
+                    file_name=label,
+                    mime=mime,
+                    key=f"dl_export_{label.replace('.', '_')}",
                 )
-        svg_path = report_dir / "after.svg"
-        if svg_path.exists():
-            st.download_button(
-                "Download after.svg",
-                data=svg_path.read_bytes(),
-                file_name="after.svg",
-                mime="image/svg+xml",
-            )
     else:
         st.info("Run a demo first to export.")
 

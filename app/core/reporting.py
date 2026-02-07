@@ -29,10 +29,15 @@ from app.core.config import (
 from app.core.types import LabelSpec, PlacementResult
 
 
+PLACEMENT_SCHEMA_VERSION: str = "1.0"
+"""Schema version for placement.json; increment when breaking changes are made."""
+
+
 def placement_to_dict(result: PlacementResult) -> dict:
     """Exact structure for placement.json. See: docs/PLACEMENT_SCHEMA.md."""
     bbox = [{"x": float(x), "y": float(y)} for x, y in result.bbox_pt]
     out = {
+        "schema_version": PLACEMENT_SCHEMA_VERSION,
         "label": {
             "text": result.label_text,
             "font_size_pt": result.font_size_pt,
@@ -70,9 +75,14 @@ def run_metadata_dict(
     font_size_pt: float,
     padding_pt: float,
     seed: int | None,
+    *,
+    render_scale: int | None = None,
+    curved_mode: bool | None = None,
+    use_learned_ranking: bool | None = None,
+    model_artifact_path: str | None = None,
 ) -> dict:
-    """Timestamp and config snapshot for run_metadata.json."""
-    return {
+    """Timestamp and config snapshot for run_metadata.json. Optional options for reproducibility."""
+    out: dict = {
         "run_name": run_name,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "geometry_path": geometry_path,
@@ -94,6 +104,15 @@ def run_metadata_dict(
             "SEED": SEED,
         },
     }
+    if render_scale is not None:
+        out["render_scale"] = render_scale
+    if curved_mode is not None:
+        out["curved_mode"] = curved_mode
+    if use_learned_ranking is not None:
+        out["use_learned_ranking"] = use_learned_ranking
+    if model_artifact_path is not None:
+        out["model_artifact_path"] = model_artifact_path
+    return out
 
 
 def ensure_report_dir(
@@ -144,10 +163,21 @@ def write_run_metadata_json(
     font_size_pt: float,
     padding_pt: float,
     seed: int | None,
+    *,
+    render_scale: int | None = None,
+    curved_mode: bool | None = None,
+    use_learned_ranking: bool | None = None,
+    model_artifact_path: str | None = None,
 ) -> Path:
-    """Write run_metadata.json to report_dir."""
+    """Write run_metadata.json to report_dir. Optional options stored for reproducibility."""
     path = report_dir / "run_metadata.json"
-    data = run_metadata_dict(run_name, geometry_path, label_text, font_size_pt, padding_pt, seed)
+    data = run_metadata_dict(
+        run_name, geometry_path, label_text, font_size_pt, padding_pt, seed,
+        render_scale=render_scale,
+        curved_mode=curved_mode,
+        use_learned_ranking=use_learned_ranking,
+        model_artifact_path=model_artifact_path,
+    )
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 
