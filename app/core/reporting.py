@@ -79,6 +79,7 @@ def run_metadata_dict(
     render_scale: int | None = None,
     curved_mode: bool | None = None,
     use_learned_ranking: bool | None = None,
+    learned_alpha: float | None = None,
     model_artifact_path: str | None = None,
 ) -> dict:
     """Timestamp and config snapshot for run_metadata.json. Optional options for reproducibility."""
@@ -110,6 +111,8 @@ def run_metadata_dict(
         out["curved_mode"] = curved_mode
     if use_learned_ranking is not None:
         out["use_learned_ranking"] = use_learned_ranking
+    if learned_alpha is not None:
+        out["learned_alpha"] = learned_alpha
     if model_artifact_path is not None:
         out["model_artifact_path"] = model_artifact_path
     return out
@@ -167,6 +170,7 @@ def write_run_metadata_json(
     render_scale: int | None = None,
     curved_mode: bool | None = None,
     use_learned_ranking: bool | None = None,
+    learned_alpha: float | None = None,
     model_artifact_path: str | None = None,
 ) -> Path:
     """Write run_metadata.json to report_dir. Optional options stored for reproducibility."""
@@ -176,6 +180,7 @@ def write_run_metadata_json(
         render_scale=render_scale,
         curved_mode=curved_mode,
         use_learned_ranking=use_learned_ranking,
+        learned_alpha=learned_alpha,
         model_artifact_path=model_artifact_path,
     )
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

@@ -1,8 +1,11 @@
 # Placement JSON Schema
 
+Schema **version**: `1.0` (see `schema_version` in placement.json). Increment when making breaking changes.
+
 ## File: placement.json
 
 {
+  "schema_version": "1.0",
   "label": {
     "text": "ELBE",
     "font_size_pt": 12,

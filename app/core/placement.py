@@ -19,6 +19,7 @@ from app.core.config import (
 from app.core.geometry import bbox_pt_to_polygon, polygon_bounds, oriented_rectangle
 from app.core.phase_b import try_phase_b_curved
 from app.core.scoring import (
+    angle_penalty_deg,
     centering_score,
     fit_margin_ratio,
     score_blended,
@@ -46,6 +47,9 @@ def _run_phase_a(
     geometry_source: str,
     seed: int | None = SEED,
     use_learned_ranking: bool = False,
+    learned_alpha: float | None = None,
+    n_sample: int | None = None,
+    k_top: int | None = None,
     occupied: BaseGeometry | None = None,
     collision_weight: float = COLLISION_WEIGHT,
     collision_max_area: float = COLLISION_MAX_AREA,
@@ -53,13 +57,17 @@ def _run_phase_a(
     """
     Try internal placement. Returns (PlacementResult, warnings) or (None, warnings).
     """
+    from app.core.config import K_TOP_CLEARANCE, N_SAMPLE_POINTS
+
     warnings: list[str] = []
     w_pt, h_pt = measure_text_pt(label.text, label.font_family, label.font_size_pt)
     if w_pt <= 0 or h_pt <= 0:
         warnings.append("Label has zero size from font metrics.")
         return None, warnings
 
-    candidates = generate_candidate_points(safe_poly, seed=seed)
+    n = n_sample if n_sample is not None else N_SAMPLE_POINTS
+    k = k_top if k_top is not None else K_TOP_CLEARANCE
+    candidates = generate_candidate_points(safe_poly, n_sample=n, k_top=k, seed=seed)
     if not candidates:
         warnings.append("No candidate points in safe polygon.")
         return None, warnings
@@ -95,12 +103,22 @@ def _run_phase_a(
                     cp.x, cp.y, cp.clearance, angle_deg,
                     min_clearance_pt, bounds, PADDING_PT,
                 )
-                score = score_blended(heuristic_s + collision_penalty, features, use_model=use_learned_ranking) - collision_penalty
+                score = score_blended(
+                    heuristic_s + collision_penalty, features,
+                    use_model=use_learned_ranking, alpha=learned_alpha,
+                ) - collision_penalty
             else:
                 score = heuristic_s
+            # Tie-break: prefer lower angle penalty, then higher fit margin (deterministic)
             if score > best_score:
                 best_score = score
                 best = (cp.x, cp.y, angle_deg, min_clearance_pt, fit, centering)
+            elif score == best_score and best is not None:
+                _, _, best_angle, _, best_fit, _ = best
+                if angle_penalty_deg(angle_deg) < angle_penalty_deg(best_angle):
+                    best = (cp.x, cp.y, angle_deg, min_clearance_pt, fit, centering)
+                elif angle_penalty_deg(angle_deg) == angle_penalty_deg(best_angle) and fit > best_fit:
+                    best = (cp.x, cp.y, angle_deg, min_clearance_pt, fit, centering)
 
     if best is None:
         warnings.append("No feasible internal placement found.")
@@ -174,6 +192,9 @@ def run_placement_phase_a(
     geometry_source: str,
     seed: int | None = SEED,
     use_learned_ranking: bool = False,
+    learned_alpha: float | None = None,
+    n_sample: int | None = None,
+    k_top: int | None = None,
     occupied: BaseGeometry | None = None,
     collision_weight: float = COLLISION_WEIGHT,
     collision_max_area: float = COLLISION_MAX_AREA,
@@ -185,6 +206,9 @@ def run_placement_phase_a(
     result, warnings = _run_phase_a(
         safe_poly, river_geom, label, geometry_source,
         seed=seed, use_learned_ranking=use_learned_ranking,
+        learned_alpha=learned_alpha,
+        n_sample=n_sample,
+        k_top=k_top,
         occupied=occupied,
         collision_weight=collision_weight,
         collision_max_area=collision_max_area,
@@ -203,6 +227,9 @@ def run_placement(
     allow_phase_b: bool = False,
     padding_pt: float = PADDING_PT,
     use_learned_ranking: bool = False,
+    learned_alpha: float | None = None,
+    n_sample: int | None = None,
+    k_top: int | None = None,
     occupied: BaseGeometry | None = None,
     collision_weight: float = COLLISION_WEIGHT,
     collision_max_area: float = COLLISION_MAX_AREA,
@@ -231,6 +258,9 @@ def run_placement(
     result = run_placement_phase_a(
         river_geom, safe_poly, label, geometry_source,
         seed=seed, use_learned_ranking=use_learned_ranking,
+        learned_alpha=learned_alpha,
+        n_sample=n_sample,
+        k_top=k_top,
         occupied=occupied,
         collision_weight=collision_weight,
         collision_max_area=collision_max_area,

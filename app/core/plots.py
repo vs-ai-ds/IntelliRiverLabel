@@ -76,6 +76,7 @@ def plot_success_rate(report_dir: Path) -> Path:
     plt.tight_layout()
     out = plots_dir / "success_rate.png"
     fig.savefig(out, dpi=120)
+    fig.savefig(out.with_suffix(".svg"), format="svg")
     plt.close(fig)
     return out
 
@@ -110,6 +111,7 @@ def plot_min_clearance_pt(report_dir: Path) -> Path:
     plt.tight_layout()
     out = plots_dir / "min_clearance_pt.png"
     fig.savefig(out, dpi=120)
+    fig.savefig(out.with_suffix(".svg"), format="svg")
     plt.close(fig)
     return out
 
@@ -138,6 +140,7 @@ def plot_success_by_family(report_dir: Path) -> Path:
     plt.tight_layout()
     out = plots_dir / "success_by_family.png"
     fig.savefig(out, dpi=120)
+    fig.savefig(out.with_suffix(".svg"), format="svg")
     plt.close(fig)
     return out
 
@@ -152,6 +155,7 @@ def plot_collision_rate_by_method(report_dir: Path) -> Path:
         fig, ax = plt.subplots(figsize=(6, 4))
         ax.set_title("Collision rate by method (no data)")
         fig.savefig(out, dpi=120)
+        fig.savefig(out.with_suffix(".svg"), format="svg")
         plt.close(fig)
         return out
     by_method: dict[str, list[float]] = {}
@@ -170,15 +174,54 @@ def plot_collision_rate_by_method(report_dir: Path) -> Path:
     plt.tight_layout()
     out = plots_dir / "collision_rate_by_method.png"
     fig.savefig(out, dpi=120)
+    fig.savefig(out.with_suffix(".svg"), format="svg")
     plt.close(fig)
     return out
 
 
+def plot_min_clearance_boxplot_by_method_family(report_dir: Path) -> Path:
+    """Boxplot of min_clearance_pt by method and family. Saves to report_dir/plots/min_clearance_by_method_family.png (+ .svg)."""
+    rows, _ = _load_results(report_dir)
+    if not rows:
+        return report_dir / "plots" / "min_clearance_by_method_family.png"
+    # Group by (method, family)
+    keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for r in rows:
+        k = (r.get("method", "unknown"), r.get("family", "default"))
+        if k not in seen:
+            seen.add(k)
+            keys.append(k)
+    by_key: dict[tuple[str, str], list[float]] = {k: [] for k in keys}
+    for r in rows:
+        k = (r.get("method", "unknown"), r.get("family", "default"))
+        if k in by_key:
+            by_key[k].append(r.get("min_clearance_pt", 0.0))
+    plots_dir = report_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    labels = [f"{m}\n{f}" for m, f in keys]
+    data = [by_key[k] for k in keys]
+    fig, ax = plt.subplots(figsize=(max(6, len(keys) * 0.8), 4))
+    ax.boxplot(data, labels=labels)
+    ax.set_ylabel("min_clearance_pt")
+    ax.set_xlabel("Method / Family")
+    ax.set_title("min_clearance_pt by method and family")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    out_png = plots_dir / "min_clearance_by_method_family.png"
+    out_svg = plots_dir / "min_clearance_by_method_family.svg"
+    fig.savefig(out_png, dpi=120)
+    fig.savefig(out_svg, format="svg")
+    plt.close(fig)
+    return out_png
+
+
 def generate_all_plots(report_dir: Path) -> list[Path]:
-    """Generate all evaluation plots."""
+    """Generate all evaluation plots (PNG + SVG)."""
     paths = []
     paths.append(plot_success_rate(report_dir))
     paths.append(plot_min_clearance_pt(report_dir))
     paths.append(plot_success_by_family(report_dir))
     paths.append(plot_collision_rate_by_method(report_dir))
+    paths.append(plot_min_clearance_boxplot_by_method_family(report_dir))
     return paths

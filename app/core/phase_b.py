@@ -31,7 +31,13 @@ from app.core.config import (
     CURVE_FIT_MARGIN,
     CURVE_MAX_POINTS,
     PATH_SAMPLE_STEP_PT,
+    PHASE_B_DEBUG,
 )
+
+def _phase_b_print(*args: object, **kwargs: object) -> None:
+    """Print only when PHASE_B_DEBUG is True (set env PHASE_B_DEBUG=1)."""
+    if PHASE_B_DEBUG:
+        print(*args, **kwargs)
 from app.core.path_b import (
     _snap_coords_inside,
     build_internal_path_polyline,
@@ -132,7 +138,7 @@ def try_phase_b_curved(
         try:
             path_clipped = path.intersection(safe_poly)
             if path_clipped.is_empty:
-                print(f"[Phase B DEBUG] Path intersection with safe_poly is empty", flush=True)
+                _phase_b_print(f"[Phase B DEBUG] Path intersection with safe_poly is empty", flush=True)
                 return None, "no internal path"
             from shapely.geometry import MultiLineString, GeometryCollection
             if isinstance(path_clipped, LineString):
@@ -147,9 +153,9 @@ def try_phase_b_curved(
                 path = max(lines, key=lambda x: x.length)
             else:
                 return None, "no internal path"
-            print(f"[Phase B DEBUG] Path clipped to safe_poly, new length: {path_length(path):.2f}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Path clipped to safe_poly, new length: {path_length(path):.2f}", flush=True)
         except Exception as e:
-            print(f"[Phase B DEBUG] Path clipping failed: {e}, using original path", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Path clipping failed: {e}, using original path", flush=True)
             # Continue with original path (might have issues, but try anyway)
 
         w_pt, _ = measure_text_pt(label_spec.text, label_spec.font_family, label_spec.font_size_pt)
@@ -162,18 +168,18 @@ def try_phase_b_curved(
 
         # Pick best window (candidate) from the centerline (now guaranteed inside safe_poly)
         path_len = path_length(path)
-        print(f"[Phase B DEBUG] Path length: {path_len:.2f}, required: {required_len:.2f}", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Path length: {path_len:.2f}, required: {required_len:.2f}", flush=True)
         if path_len < required_len:
-            print(f"[Phase B DEBUG] Path too short after clipping: {path_len:.2f} < {required_len:.2f}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Path too short after clipping: {path_len:.2f} < {required_len:.2f}", flush=True)
             return None, "no internal path"
         window = propose_path_window(path, required_len, boundary_poly=safe_poly)
         if window is None or window.is_empty:
-            print("[Phase B DEBUG] propose_path_window returned None or empty", flush=True)
+            _phase_b_print("[Phase B DEBUG] propose_path_window returned None or empty", flush=True)
             return None, "window not found"
         window_len = path_length(window)
-        print(f"[Phase B DEBUG] Selected window length: {window_len:.2f}, required: {required_len:.2f}", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Selected window length: {window_len:.2f}, required: {required_len:.2f}", flush=True)
         if window_len < required_len * 0.99:
-            print(f"[Phase B DEBUG] Window too short: {window_len:.2f} < {required_len * 0.99:.2f}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Window too short: {window_len:.2f} < {required_len * 0.99:.2f}", flush=True)
             return None, "window not found"
         
         # Debug: Check if window vertices are inside before clipping
@@ -184,7 +190,7 @@ def try_phase_b_curved(
                 dist = safe_poly.boundary.distance(p)
                 outside_before.append((i, x, y, dist))
         if outside_before:
-            print(f"[Phase B DEBUG] {len(outside_before)} window vertices outside before clipping: {outside_before[:3]}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] {len(outside_before)} window vertices outside before clipping: {outside_before[:3]}", flush=True)
 
         # Clip window to safe polygon to ensure all segments (and interpolated points) are inside
         # Snapping vertices isn't enough - interpolation along segments can still go outside
@@ -200,9 +206,9 @@ def try_phase_b_curved(
                 safe_buffered = safe_poly
             
             clipped = window.intersection(safe_buffered)
-            print(f"[Phase B DEBUG] Intersection result: type={type(clipped).__name__}, empty={clipped.is_empty}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Intersection result: type={type(clipped).__name__}, empty={clipped.is_empty}", flush=True)
             if clipped.is_empty:
-                print("[Phase B DEBUG] Intersection is empty - window completely outside safe_poly", flush=True)
+                _phase_b_print("[Phase B DEBUG] Intersection is empty - window completely outside safe_poly", flush=True)
                 return None, "window points outside safe polygon"
             
             # Handle intersection result (could be LineString, MultiLineString, or GeometryCollection)
@@ -233,9 +239,9 @@ def try_phase_b_curved(
             
             # Re-check length after clipping (clipping might shorten the path)
             final_len = path_length(window)
-            print(f"[Phase B DEBUG] Window after clipping: length={final_len:.2f}, required min={required_len * 0.9:.2f}", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Window after clipping: length={final_len:.2f}, required min={required_len * 0.9:.2f}", flush=True)
             if final_len < required_len * 0.9:
-                print(f"[Phase B DEBUG] Window too short after clipping: {final_len:.2f} < {required_len * 0.9:.2f}", flush=True)
+                _phase_b_print(f"[Phase B DEBUG] Window too short after clipping: {final_len:.2f} < {required_len * 0.9:.2f}", flush=True)
                 return None, "window not found"
         except Exception as e:
             logger.warning(f"Phase B: clipping exception: {type(e).__name__}: {e}")
@@ -259,12 +265,12 @@ def try_phase_b_curved(
         # 1) HARD REQUIRE: window points must be inside safe polygon
         # Sample points along the clipped window
         step_pt = max(1.0, float(PATH_SAMPLE_STEP_PT))
-        print(f"[Phase B DEBUG] Sampling points along window with step={step_pt:.2f}", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Sampling points along window with step={step_pt:.2f}", flush=True)
         pts = sample_along_path(window, step_pt)
         if not pts:
-            print("[Phase B DEBUG] sample_along_path returned no points", flush=True)
+            _phase_b_print("[Phase B DEBUG] sample_along_path returned no points", flush=True)
             return None, "window not found"
-        print(f"[Phase B DEBUG] Sampled {len(pts)} points along window", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Sampled {len(pts)} points along window", flush=True)
         
         # Verify all sampled points are inside, and snap any outliers
         from shapely.ops import nearest_points
@@ -281,8 +287,8 @@ def try_phase_b_curved(
             logger.warning(f"Phase B: Window coords (first 3): {list(window.coords[:3])}")
             logger.warning(f"Phase B: Safe poly bounds: {safe_poly.bounds}")
             # Print for visibility
-            print(f"WARNING: {warn_msg}", flush=True)
-            print(f"  Outside points (first 3): {outside_pts[:3]}", flush=True)
+            _phase_b_print(f"WARNING: {warn_msg}", flush=True)
+            _phase_b_print(f"  Outside points (first 3): {outside_pts[:3]}", flush=True)
             
             # Snap any points that are outside (precision issue after clipping)
             # Use inner buffer to preserve clearance
@@ -320,9 +326,9 @@ def try_phase_b_curved(
                         logger.debug(f"Phase B: snapping failed for point ({p.x:.2f}, {p.y:.2f}): {snap_err}")
             
             if snap_failed > 0:
-                print(f"[Phase B DEBUG] {snap_failed} points failed to snap", flush=True)
+                _phase_b_print(f"[Phase B DEBUG] {snap_failed} points failed to snap", flush=True)
             
-            print(f"[Phase B DEBUG] Snapped {len(snapped_pts)} points, checking if all inside...", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] Snapped {len(snapped_pts)} points, checking if all inside...", flush=True)
             # Re-check with snapped points
             still_outside = []
             for p in snapped_pts:
@@ -333,26 +339,26 @@ def try_phase_b_curved(
                 error_msg = f"Phase B: {len(still_outside)} points still outside after snapping: {still_outside[:5]}"
                 logger.error(error_msg)
                 # Also print for visibility (CLI/Streamlit)
-                print(f"[Phase B ERROR] {error_msg}", flush=True)
-                print(f"[Phase B ERROR] Window coords count: {len(window.coords)}", flush=True)
-                print(f"[Phase B ERROR] Window bounds: {window.bounds}", flush=True)
-                print(f"[Phase B ERROR] Safe poly bounds: {safe_poly.bounds}", flush=True)
+                _phase_b_print(f"[Phase B ERROR] {error_msg}", flush=True)
+                _phase_b_print(f"[Phase B ERROR] Window coords count: {len(window.coords)}", flush=True)
+                _phase_b_print(f"[Phase B ERROR] Window bounds: {window.bounds}", flush=True)
+                _phase_b_print(f"[Phase B ERROR] Safe poly bounds: {safe_poly.bounds}", flush=True)
                 return None, f"window points outside safe polygon ({len(still_outside)}/{len(snapped_pts)} points still outside)"
             else:
-                print(f"[Phase B DEBUG] SUCCESS: All {len(snapped_pts)} points inside after snapping", flush=True)
+                _phase_b_print(f"[Phase B DEBUG] SUCCESS: All {len(snapped_pts)} points inside after snapping", flush=True)
         else:
-            print(f"[Phase B DEBUG] SUCCESS: All {len(pts)} sampled points are inside safe_poly", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] SUCCESS: All {len(pts)} sampled points are inside safe_poly", flush=True)
 
         # 2) Clearance: measure against SAFE boundary (which already has padding applied)
         # So we only need CURVE_EXTRA_CLEARANCE_PT, not padding_pt + CURVE_EXTRA_CLEARANCE_PT
-        print(f"[Phase B DEBUG] Checking clearance...", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Checking clearance...", flush=True)
         min_clearance = float(min_clearance_along_path(window, safe_poly))
         required_clearance = float(max(0.0, CURVE_EXTRA_CLEARANCE_PT))
-        print(f"[Phase B DEBUG] Clearance: min={min_clearance:.2f}, required={required_clearance:.2f}", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Clearance: min={min_clearance:.2f}, required={required_clearance:.2f}", flush=True)
         if min_clearance < required_clearance:
-            print(f"[Phase B DEBUG] FAILED: Insufficient clearance", flush=True)
+            _phase_b_print(f"[Phase B DEBUG] FAILED: Insufficient clearance", flush=True)
             return None, f"insufficient clearance: min={min_clearance:.2f}, required={required_clearance:.2f}"
-        print(f"[Phase B DEBUG] Clearance check passed", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Clearance check passed", flush=True)
 
         coords = list(window.coords)
         path_pt = _downsample_path(coords, CURVE_MAX_POINTS)
@@ -369,8 +375,8 @@ def try_phase_b_curved(
         b = window.bounds
         bbox_pt = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])]
 
-        print(f"[Phase B DEBUG] SUCCESS: Phase B curved placement completed!", flush=True)
-        print(f"[Phase B DEBUG] Final window length: {path_length(window):.2f}, clearance: {min_clearance:.2f}", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] SUCCESS: Phase B curved placement completed!", flush=True)
+        _phase_b_print(f"[Phase B DEBUG] Final window length: {path_length(window):.2f}, clearance: {min_clearance:.2f}", flush=True)
         
         return (
             PlacementResult(

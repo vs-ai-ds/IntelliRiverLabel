@@ -21,15 +21,25 @@ def _env_float(key: str, default: float) -> float:
 
 def _env_int(key: str, default: int | None) -> int | None:
     v = os.environ.get(key)
-    if v is None:
+    if v is None or v.strip() == "":
         return default
-    s = v.strip()
-    if s == "" or s.lower() == "none":
-        return None if key == "SEED" else default
     try:
         return int(v)
     except ValueError:
         return default
+
+def _env_seed() -> int | None:
+    """SEED: unset -> 42, empty/none -> None, else int."""
+    v = os.environ.get("SEED")
+    if v is None:
+        return 42
+    s = v.strip().lower()
+    if s in ("", "none"):
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return 42
 
 def _env_bool(key: str, default: bool) -> bool:
     v = os.environ.get(key)
@@ -77,8 +87,8 @@ SCORE_WEIGHT_CENTERING: float = 0.5
 SCORE_WEIGHT_ANGLE_PENALTY: float = 0.1
 
 # ----- Determinism -----
-SEED: int | None = _env_int("SEED", 42)
-"""Random seed for sampling; None for non-deterministic. Override with env SEED (empty = None)."""
+SEED: int | None = _env_seed()
+"""Random seed for sampling; None for non-deterministic. Env SEED: unset=42, empty/none=None."""
 
 # ----- Default font -----
 DEFAULT_FONT_FAMILY: str = "DejaVu Sans"

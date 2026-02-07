@@ -141,7 +141,10 @@ def render_debug(
 ) -> None:
     """Render debug overlay. scale multiplies output resolution (1x, 2x, 4x). If occupied, draw semi-transparent hatch."""
     w, h = width_px * scale, height_px * scale
-    fig, ax = _new_fig(w, h)
+    fig = plt.figure(figsize=(w / 100.0, h / 100.0), dpi=100, constrained_layout=False)
+    # Leave bottom margin so legend does not overlap the image
+    ax = fig.add_axes([0.05, 0.08, 0.9, 0.88])  # left, bottom, width, height
+    ax.axis("off")
     _draw_polygon(ax, river_geom, fill_alpha=0.5)
 
     if occupied is not None and not occupied.is_empty:
@@ -177,11 +180,10 @@ def render_debug(
         ax.plot(path_xy[:, 0], path_xy[:, 1], linewidth=2, label="path")
 
     set_axes_to_polygon(ax, river_geom, pad_frac=0.05)
-    # Legend below plot so it never covers the river
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.06), ncol=3, fontsize=8)
-    fig.subplots_adjust(bottom=0.12)
+    # Legend in the reserved bottom margin so it never overlaps the image
+    leg = ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=3, fontsize=8)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*constrained_layout.*", category=UserWarning)
-        fig.savefig(output_path, dpi=100, facecolor="white", bbox_inches="tight")
+        fig.savefig(output_path, dpi=100, facecolor="white", bbox_inches="tight", bbox_extra_artists=[leg])
     plt.close(fig)
 

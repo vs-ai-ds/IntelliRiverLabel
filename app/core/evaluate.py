@@ -88,6 +88,42 @@ def _run_one(
         }
 
 
+def _run_one_phase_b(
+    river_geom: BaseGeometry,
+    safe_poly: BaseGeometry,
+    label: LabelSpec,
+    geometry_source: str,
+    seed: int | None,
+    padding_pt: float,
+) -> dict:
+    """Run placement with Phase B enabled; return metrics dict. Success = mode is phase_b_curved."""
+    try:
+        from app.core.placement import run_placement
+        result = run_placement(
+            river_geom,
+            safe_poly,
+            label,
+            geometry_source,
+            seed=seed,
+            allow_phase_b=True,
+            padding_pt=padding_pt,
+            use_learned_ranking=False,
+        )
+        return {
+            "success": result.mode == "phase_b_curved",
+            "min_clearance_pt": result.min_clearance_pt,
+            "fit_margin_ratio": result.fit_margin_ratio,
+            "mode_used": result.mode,
+        }
+    except Exception:
+        return {
+            "success": False,
+            "min_clearance_pt": 0.0,
+            "fit_margin_ratio": 0.0,
+            "mode_used": "error",
+        }
+
+
 EVAL_FAMILIES = ("straight_wide", "straight_narrow", "curved_wide", "curved_narrow", "braided")
 
 
@@ -109,9 +145,11 @@ def run_evaluation(
     n_synthetic: int = 20,
     seed: int | None = SEED,
     repo_root: Path | None = None,
+    current_geometry: BaseGeometry | None = None,
 ) -> Path:
     """
     Run baselines and our modes on provided WKT + synthetic batch.
+    If current_geometry is provided, it is added as one case (source "current_geometry", family "default").
     Writes evaluation_results.csv and evaluation_summary.json to reports/<run_name>/.
     Returns report_dir.
     """
@@ -120,8 +158,10 @@ def run_evaluation(
     label = LabelSpec(text="ELBE", font_family=DEFAULT_FONT_FAMILY, font_size_pt=12.0)
 
     rows: list[dict] = []
-    cases: list[tuple[BaseGeometry, str]] = []
+    cases: list[tuple[BaseGeometry, str, str]] = []
 
+    if current_geometry is not None and not current_geometry.is_empty:
+        cases.append((current_geometry, "current_geometry", "default"))
     if geometry_path:
         geom_path = root / geometry_path
         if geom_path.exists():
@@ -151,6 +191,9 @@ def run_evaluation(
         h_metrics = _run_one(river_geom, safe_poly, label, source, seed, use_learned=False)
         rows.append(_row("heuristic_only", h_metrics))
 
+        phase_b_metrics = _run_one_phase_b(river_geom, safe_poly, label, source, seed, PADDING_PT)
+        rows.append(_row("phase_b_curved", phase_b_metrics))
+
         try:
             from app.models.registry import load_model
             if load_model() is not None:
@@ -171,6 +214,9 @@ def run_evaluation(
         "run_name": run_name,
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "n_cases": len(cases),
+        "n_synthetic": n_synthetic,
+        "seed": seed,
+        "geometry_path": geometry_path,
         "success_rate": {},
         "mean_min_clearance_pt": {},
         "mean_fit_margin_ratio": {},

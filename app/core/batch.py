@@ -11,7 +11,7 @@ import json
 import time
 from pathlib import Path
 
-from app.core.config import DEFAULT_FONT_FAMILY, PADDING_PT, REPORTS_DIR, SEED
+from app.core.config import DEFAULT_FONT_FAMILY, K_TOP_CLEARANCE, N_SAMPLE_POINTS, PADDING_PT, REPORTS_DIR, SEED
 from app.core.io import load_and_validate_river, parse_wkt, validate_geometry
 from app.core.layout import run_multi_label_layout
 from app.core.preprocess import preprocess_river
@@ -47,14 +47,35 @@ def _batch_from_dir(
     padding_pt: float = PADDING_PT,
     seed: int | None = SEED,
     allow_phase_b: bool = False,
+    skip_debug_png: bool = False,
+    n_sample: int | None = None,
+    k_top: int | None = None,
+    max_failures: int | None = None,
 ) -> Path:
-    """Run batch on all .wkt files in wkt_dir. Returns path to batch report dir."""
+    """Run batch on all .wkt files in wkt_dir. Returns path to batch report dir. If max_failures is set, stop after that many load/placement failures."""
     batch_dir = ensure_report_dir(repo_root, f"batch_{run_name}", output_dir=REPORTS_DIR)
     cases_dir = batch_dir / "cases"
     cases_dir.mkdir(parents=True, exist_ok=True)
     wkt_files = sorted(wkt_dir.glob("*.wkt"))[: (limit or 999)]
     rows: list[dict] = []
+    failures = 0
     for i, wkt_path in enumerate(wkt_files):
+        if max_failures is not None and failures >= max_failures:
+            rows.append({
+                "case_id": f"_stopped_after_{failures}_failures",
+                "case_dir": "",
+                "geometry_source": "",
+                "labels": ",".join(l.text for l in labels),
+                "mode_used": "aborted",
+                "n_labels": len(labels),
+                "success_count": 0,
+                "mean_min_clearance": "",
+                "mean_fit_margin": "",
+                "collisions_detected": 0,
+                "duration_ms": 0,
+                "warnings_count": 0,
+            })
+            break
         case_id = f"case_{i:04d}_{wkt_path.stem}"
         case_dir = cases_dir / case_id
         case_dir.mkdir(parents=True, exist_ok=True)
@@ -63,25 +84,28 @@ def _batch_from_dir(
         try:
             geom = load_and_validate_river(wkt_path, repo_root=None)
         except Exception:
+            failures += 1
             rows.append({
-                "case_id": case_id, "geometry_source": geom_source, "labels": ",".join(l.text for l in labels),
-                "mode_used": "error", "n_labels": len(labels), "success_count": 0,
-                "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0,
+                "case_id": case_id, "case_dir": f"cases/{case_id}", "geometry_source": geom_source,
+                "labels": ",".join(l.text for l in labels), "mode_used": "error", "n_labels": len(labels),
+                "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0,
                 "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0,
             })
             continue
         river_geom, safe_poly = preprocess_river(geom, padding_pt=padding_pt)
         if safe_poly.is_empty:
+            failures += 1
             rows.append({
-                "case_id": case_id, "geometry_source": geom_source, "labels": ",".join(l.text for l in labels),
-                "mode_used": "empty_safe", "n_labels": len(labels), "success_count": 0,
-                "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0,
+                "case_id": case_id, "case_dir": f"cases/{case_id}", "geometry_source": geom_source,
+                "labels": ",".join(l.text for l in labels), "mode_used": "empty_safe", "n_labels": len(labels),
+                "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0,
                 "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0,
             })
             continue
         layout = run_multi_label_layout(
             river_geom, safe_poly, labels, geom_source,
             seed=seed, padding_pt=padding_pt, allow_phase_b=allow_phase_b,
+            n_sample=n_sample, k_top=k_top,
         )
         duration_ms = int((time.perf_counter() - t0) * 1000)
         if len(layout.results) == 1:
@@ -101,20 +125,29 @@ def _batch_from_dir(
         for r in layout.results:
             render_after(river_geom, r, case_dir / "after.png")
             break
-        candidates = generate_candidate_points(safe_poly, seed=seed)
-        render_debug(river_geom, safe_poly, candidates, layout.results[0], case_dir / "debug.png")
+        if not skip_debug_png:
+            candidates = generate_candidate_points(safe_poly, seed=seed)
+            render_debug(river_geom, safe_poly, candidates, layout.results[0], case_dir / "debug.png")
         write_run_metadata_json(case_dir, run_name, geom_source, ",".join(l.text for l in labels), labels[0].font_size_pt, padding_pt, seed)
+        rel_case_dir = f"cases/{case_id}"
         rows.append({
-            "case_id": case_id, "geometry_source": geom_source, "labels": ",".join(l.text for l in labels),
-            "mode_used": mode_used, "n_labels": len(labels), "success_count": layout.success_count,
-            "mean_min_clearance": round(mean_cl, 2), "mean_fit_margin": round(mean_fit, 2),
+            "case_id": case_id,
+            "case_dir": rel_case_dir,
+            "geometry_source": geom_source,
+            "labels": ",".join(l.text for l in labels),
+            "mode_used": mode_used,
+            "n_labels": len(labels),
+            "success_count": layout.success_count,
+            "mean_min_clearance": round(mean_cl, 2),
+            "mean_fit_margin": round(mean_fit, 2),
             "collisions_detected": layout.collisions_detected,
-            "duration_ms": duration_ms, "warnings_count": sum(len(r.warnings) for r in layout.results),
+            "duration_ms": duration_ms,
+            "warnings_count": sum(len(r.warnings) for r in layout.results),
         })
     index_path = batch_dir / "index.csv"
     if rows:
         with open(index_path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            w = csv.DictWriter(f, fieldnames=list(rows[0].keys()), extrasaction="ignore")
             w.writeheader()
             w.writerows(rows)
     return batch_dir
@@ -131,6 +164,10 @@ def run_batch(
     padding_pt: float = PADDING_PT,
     seed: int | None = SEED,
     allow_phase_b: bool = False,
+    skip_debug_png: bool = False,
+    n_sample: int | None = None,
+    k_top: int | None = None,
+    max_failures: int | None = None,
 ) -> Path:
     """
     Run batch: from batch_dir (directory of .wkt) or manifest (CSV/JSON with paths).
@@ -139,7 +176,7 @@ def run_batch(
     root = repo_root or Path.cwd().resolve()
     labels = _load_labels(labels_text, font_size_pt)
     if batch_dir is not None and batch_dir.is_dir():
-        return _batch_from_dir(batch_dir, labels, run_name, root, limit=limit, padding_pt=padding_pt, seed=seed, allow_phase_b=allow_phase_b)
+        return _batch_from_dir(batch_dir, labels, run_name, root, limit=limit, padding_pt=padding_pt, seed=seed, allow_phase_b=allow_phase_b, skip_debug_png=skip_debug_png, n_sample=n_sample, k_top=k_top, max_failures=max_failures)
     if manifest_path is not None and manifest_path.exists():
         # Minimal manifest: CSV with path,label or path,labels
         batch_dir = (root / REPORTS_DIR / f"batch_{run_name}").resolve()
@@ -147,10 +184,14 @@ def run_batch(
         cases_dir = batch_dir / "cases"
         cases_dir.mkdir(parents=True, exist_ok=True)
         rows: list[dict] = []
+        failures = 0
         with open(manifest_path, newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
             for i, row in enumerate(r):
                 if limit and i >= limit:
+                    break
+                if max_failures is not None and failures >= max_failures:
+                    rows.append({"case_id": f"_stopped_after_{failures}_failures", "case_dir": "", "geometry_source": "", "labels": labels_text, "mode_used": "aborted", "n_labels": len(labels), "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0, "duration_ms": 0, "warnings_count": 0})
                     break
                 path_key = "path" if "path" in row else "geometry"
                 path_val = row.get(path_key, row.get("file", ""))
@@ -168,13 +209,15 @@ def run_batch(
                 try:
                     geom = load_and_validate_river(p, repo_root=None)
                 except Exception:
-                    rows.append({"case_id": case_id, "geometry_source": path_val, "labels": lab_text, "mode_used": "error", "n_labels": len(case_labels), "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0, "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0})
+                    failures += 1
+                    rows.append({"case_id": case_id, "case_dir": f"cases/{case_id}", "geometry_source": path_val, "labels": lab_text, "mode_used": "error", "n_labels": len(case_labels), "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0, "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0})
                     continue
                 river_geom, safe_poly = preprocess_river(geom, padding_pt=padding_pt)
                 if safe_poly.is_empty:
-                    rows.append({"case_id": case_id, "geometry_source": path_val, "labels": lab_text, "mode_used": "empty_safe", "n_labels": len(case_labels), "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0, "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0})
+                    failures += 1
+                    rows.append({"case_id": case_id, "case_dir": f"cases/{case_id}", "geometry_source": path_val, "labels": lab_text, "mode_used": "empty_safe", "n_labels": len(case_labels), "success_count": 0, "mean_min_clearance": "", "mean_fit_margin": "", "collisions_detected": 0, "duration_ms": int((time.perf_counter() - t0) * 1000), "warnings_count": 0})
                     continue
-                layout = run_multi_label_layout(river_geom, safe_poly, case_labels, path_val, seed=seed, padding_pt=padding_pt, allow_phase_b=allow_phase_b)
+                layout = run_multi_label_layout(river_geom, safe_poly, case_labels, path_val, seed=seed, padding_pt=padding_pt, allow_phase_b=allow_phase_b, n_sample=n_sample, k_top=k_top)
                 duration_ms = int((time.perf_counter() - t0) * 1000)
                 if len(layout.results) == 1:
                     write_placement_json(case_dir, layout.results[0])
@@ -185,10 +228,11 @@ def run_batch(
                 render_before(river_geom, case_dir / "before.png")
                 if layout.results:
                     render_after(river_geom, layout.results[0], case_dir / "after.png")
-                    candidates = generate_candidate_points(safe_poly, seed=seed)
-                    render_debug(river_geom, safe_poly, candidates, layout.results[0], case_dir / "debug.png")
+                    if not skip_debug_png:
+                        candidates = generate_candidate_points(safe_poly, seed=seed)
+                        render_debug(river_geom, safe_poly, candidates, layout.results[0], case_dir / "debug.png")
                 write_run_metadata_json(case_dir, run_name, path_val, lab_text, font_size_pt, padding_pt, seed)
-                rows.append({"case_id": case_id, "geometry_source": path_val, "labels": lab_text, "mode_used": layout.results[0].mode if layout.results else "error", "n_labels": len(case_labels), "success_count": layout.success_count, "mean_min_clearance": round(mean_cl, 2), "mean_fit_margin": round(mean_fit, 2), "collisions_detected": layout.collisions_detected, "duration_ms": duration_ms, "warnings_count": sum(len(r.warnings) for r in layout.results)})
+                rows.append({"case_id": case_id, "case_dir": f"cases/{case_id}", "geometry_source": path_val, "labels": lab_text, "mode_used": layout.results[0].mode if layout.results else "error", "n_labels": len(case_labels), "success_count": layout.success_count, "mean_min_clearance": round(mean_cl, 2), "mean_fit_margin": round(mean_fit, 2), "collisions_detected": layout.collisions_detected, "duration_ms": duration_ms, "warnings_count": sum(len(r.warnings) for r in layout.results)})
         index_path = batch_dir / "index.csv"
         if rows:
             with open(index_path, "w", newline="", encoding="utf-8") as f:
